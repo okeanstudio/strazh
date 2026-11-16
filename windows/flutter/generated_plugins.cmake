@@ -1,0 +1,45 @@
+#
+# Generated file, do not edit.
+#
+
+list(APPEND FLUTTER_PLUGIN_LIST
+  app_links
+  audioplayers_windows
+  connectivity_plus
+  desktop_webview_window
+  emoji_picker_flutter
+  ffmpeg_kit_flutter_new_min
+  file_selector_windows
+  firebase_auth
+  firebase_core
+  flutter_desktop_notifications
+  flutter_secure_storage_windows
+  flutter_webrtc
+  media_kit_libs_windows_audio
+  media_kit_libs_windows_video
+  media_kit_video
+  permission_handler_windows
+  record_windows
+  screen_retriever_windows
+  url_launcher_windows
+  window_manager
+  window_to_front
+)
+
+list(APPEND FLUTTER_FFI_PLUGIN_LIST
+  jni
+)
+
+set(PLUGIN_BUNDLED_LIBRARIES)
+
+foreach(plugin ${FLUTTER_PLUGIN_LIST})
+  add_subdirectory(flutter/ephemeral/.plugin_symlinks/${plugin}/windows plugins/${plugin})
+  target_link_libraries(${BINARY_NAME} PRIVATE ${plugin}_plugin)
+  list(APPEND PLUGIN_BUNDLED_LIBRARIES $<TARGET_FILE:${plugin}_plugin>)
+  list(APPEND PLUGIN_BUNDLED_LIBRARIES ${${plugin}_bundled_libraries})
+endforeach(plugin)
+
+foreach(ffi_plugin ${FLUTTER_FFI_PLUGIN_LIST})
+  add_subdirectory(flutter/ephemeral/.plugin_symlinks/${ffi_plugin}/windows plugins/${ffi_plugin})
+  list(APPEND PLUGIN_BUNDLED_LIBRARIES ${${ffi_plugin}_bundled_libraries})
+endforeach(ffi_plugin)

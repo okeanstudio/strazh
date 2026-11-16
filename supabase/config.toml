@@ -1,0 +1,11 @@
+[functions.send-message-push]
+verify_jwt = false
+
+[functions.request-phone-login]
+verify_jwt = false
+
+[functions.verify-phone-login]
+verify_jwt = false
+
+[functions.list-phone-login-challenges]
+verify_jwt = true

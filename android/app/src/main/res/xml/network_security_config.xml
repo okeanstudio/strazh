@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Конфигурация доменов, которые используются приложением -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">auth.strazh.chat</domain>
+        <domain includeSubdomains="true">api.strazh.chat</domain>
+        <domain includeSubdomains="true">strazh.chat</domain>
+    </domain-config>
+
+    <!-- Для всех остальных доменов -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

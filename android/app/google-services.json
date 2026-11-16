@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "685600608862",
+    "project_id": "strazh-e2ee",
+    "storage_bucket": "strazh-e2ee.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:685600608862:android:b8c1a71e277b80a4619acf",
+        "android_client_info": {
+          "package_name": "com.okeanstudio.strazh"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCsnShQcERzU_9KJse-YD5ERn7J1_1etlk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
