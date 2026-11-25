@@ -9,6 +9,10 @@ class Chat {
   final bool lastMessageIsMe;
   final bool lastMessageReadByOthers;
   final bool isVerified;
+  final bool isBot;
+  final bool botVerified;
+  final bool hasVoltStreak;
+  final bool voltExtendedToday;
 
   const Chat({
     required this.id,
@@ -21,6 +25,10 @@ class Chat {
     this.lastMessageIsMe = false,
     this.lastMessageReadByOthers = false,
     this.isVerified = false,
+    this.isBot = false,
+    this.botVerified = false,
+    this.hasVoltStreak = false,
+    this.voltExtendedToday = false,
   });
 
   Chat withLastMessageReadByOthers(bool value) {
@@ -35,6 +43,10 @@ class Chat {
       lastMessageIsMe: lastMessageIsMe,
       lastMessageReadByOthers: value,
       isVerified: isVerified,
+      isBot: isBot,
+      botVerified: botVerified,
+      hasVoltStreak: hasVoltStreak,
+      voltExtendedToday: voltExtendedToday,
     );
   }
 
@@ -50,6 +62,32 @@ class Chat {
       lastMessageIsMe: lastMessageIsMe,
       lastMessageReadByOthers: lastMessageReadByOthers,
       isVerified: isVerified,
+      isBot: isBot,
+      botVerified: botVerified,
+      hasVoltStreak: hasVoltStreak,
+      voltExtendedToday: voltExtendedToday,
+    );
+  }
+
+  Chat withVoltStreak({
+    required bool hasVoltStreak,
+    required bool voltExtendedToday,
+  }) {
+    return Chat(
+      id: id,
+      name: name,
+      lastMessage: lastMessage,
+      lastMessageTime: lastMessageTime,
+      avatarUrl: avatarUrl,
+      unreadCount: unreadCount,
+      type: type,
+      lastMessageIsMe: lastMessageIsMe,
+      lastMessageReadByOthers: lastMessageReadByOthers,
+      isVerified: isVerified,
+      isBot: isBot,
+      botVerified: botVerified,
+      hasVoltStreak: hasVoltStreak,
+      voltExtendedToday: voltExtendedToday,
     );
   }
 }

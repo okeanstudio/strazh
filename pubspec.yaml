@@ -1,7 +1,7 @@
 name: strazh
 description: "A cross-platform messenger."
 publish_to: 'none'
-version: 1.1.3+24
+version: 1.1.4+25
 
 environment:
   sdk: ^3.11.4
@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  crypto: ^3.0.6
   flutter_localizations:
     sdk: flutter
 
@@ -38,7 +39,7 @@ dependencies:
   media_kit_libs_windows_audio: ^1.0.9
   media_kit_libs_windows_video: ^1.0.11
 
-  #Аудиопроигрыватели
+  # Аудиопроигрыватели
   audioplayers: ^6.8.1
 
   # Запись голоса
@@ -51,7 +52,7 @@ dependencies:
   image_picker: ^1.2.3
   file_selector: ^1.1.0
 
-  #Универсальность
+  # Универсальность
   universal_io: ^2.2.2
 
   # Открытие ссылок
@@ -69,40 +70,41 @@ dependencies:
 
   # HTTP-запросы
   http: ^1.6.0
+  web: ^1.1.1
 
   # Firebase
   firebase_core: ^4.11.0
   firebase_auth: ^6.5.4
   firebase_messaging: ^16.6.0
 
-  #Уведомления
+  # Уведомления
   flutter_desktop_notifications: ^1.1.2
 
-  #Windows
+  # Windows
   window_manager: ^0.5.2
 
-  #Сохранение
+  # Сохранение
   shared_preferences: ^2.5.5
 
-  #Нейросети
+  # Нейросети
   deepseek_api: ^0.1.2
 
-  #Сокеты
+  # Сокеты
   socket_io_client: ^3.1.6
 
-  #Информация
+  # Информация
   package_info_plus: ^10.2.1
 
-  #Подключение
+  # Подключение
   connectivity_plus: ^7.3.1
 
-  #Анимации
+  # Анимации
   lottie: ^3.6.1
 
   # OAuth / OIDC flow (внешний браузер)
   flutter_web_auth_2: ^5.1.0
 
-  #Галлерея
+  # Галлерея
   saver_gallery: ^5.1.0
 
   permission_handler: ^13.0.2
@@ -113,11 +115,14 @@ dependencies:
   video_player: ^2.14.1
   camera: ^0.12.2
   cryptography: ^2.9.0
+  photo_manager: ^3.12.0
+  desktop_drop: ^0.8.4
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
   flutter_launcher_icons: "^0.14.4"
+  dmg: ^0.1.10
 
 flutter_launcher_icons:
   android: "launcher_icon"
@@ -154,6 +159,7 @@ flutter:
     - assets/icon/poop.png
     - assets/icon/icon.png
     - assets/icon/okean_id.jpg
+    - assets/icon/bots/botfather_strazh.jpg
     - assets/sounds/send_message.mp3
     - assets/sounds/message_here.mp3
     - assets/certs/isrg-root-x2.der

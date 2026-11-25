@@ -57,9 +57,58 @@ class _SearchUsersDialogState extends State<SearchUsersDialog> {
     }
   }
 
-  Future<String?> _getOrCreateDirectChat(String otherUserId) async {
+  Future<String?> _getOrCreateDirectChat(
+    String otherUserId, {
+    required bool isBot,
+  }) async {
     final supabase = Supabase.instance.client;
     final currentUserId = widget.currentUser.id;
+
+    if (isBot) {
+      final botChats = await supabase
+          .from('bot_chat_participants')
+          .select('room_id')
+          .eq('bot_id', otherUserId);
+      final botRoomIds = botChats
+          .map((row) => row['room_id'] as String)
+          .toList();
+      if (botRoomIds.isNotEmpty) {
+        final myBotChats = await supabase
+            .from('room_participants')
+            .select('room_id')
+            .eq('user_id', currentUserId)
+            .inFilter('room_id', botRoomIds);
+        for (final chat in myBotChats) {
+          final room = await supabase
+              .from('rooms')
+              .select('type')
+              .eq('id', chat['room_id'])
+              .maybeSingle();
+          if (room?['type'] == 'direct') return chat['room_id'] as String;
+        }
+      }
+
+      final newRoom = await supabase
+          .from('rooms')
+          .insert({
+            'type': 'direct',
+            'created_by': currentUserId,
+            'created_at': DateTime.now().toIso8601String(),
+          })
+          .select()
+          .single();
+      final roomId = newRoom['id'] as String;
+      await supabase.from('room_participants').insert({
+        'room_id': roomId,
+        'user_id': currentUserId,
+        'joined_at': DateTime.now().toIso8601String(),
+      });
+      await supabase.rpc(
+        'add_bot_to_direct_chat',
+        params: {'p_room_id': roomId, 'p_bot_id': otherUserId},
+      );
+      return roomId;
+    }
 
     // Проверяем, существует ли уже чат
     final existingChats = await supabase
@@ -121,15 +170,26 @@ class _SearchUsersDialogState extends State<SearchUsersDialog> {
     return roomId;
   }
 
-  void _openChat(String userId, String userName) async {
-    final roomId = await _getOrCreateDirectChat(userId);
+  void _openChat(
+    String userId,
+    String userName, {
+    bool isBot = false,
+    bool botVerified = false,
+  }) async {
+    final roomId = await _getOrCreateDirectChat(userId, isBot: isBot);
     if (roomId != null && mounted) {
       Navigator.pop(context);
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => ChatScreen(
-            chat: Chat(id: roomId, name: userName, type: 'direct'),
+            chat: Chat(
+              id: roomId,
+              name: userName,
+              type: 'direct',
+              isBot: isBot,
+              botVerified: botVerified,
+            ),
             currentUser: widget.currentUser,
           ),
         ),
@@ -220,9 +280,34 @@ class _SearchUsersDialogState extends State<SearchUsersDialog> {
                                   style: const TextStyle(color: Colors.white),
                                 ),
                               ),
-                              title: Text(
-                                user['name'] ?? 'Без имени',
-                                style: const TextStyle(color: Colors.white),
+                              title: Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      user['name'] ?? 'Без имени',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (user['is_bot'] == true) ...[
+                                    const SizedBox(width: 5),
+                                    const Icon(
+                                      Icons.smart_toy,
+                                      size: 16,
+                                      color: Colors.deepPurpleAccent,
+                                    ),
+                                    if (user['bot_verified'] == true) ...[
+                                      const SizedBox(width: 3),
+                                      const Icon(
+                                        Icons.verified,
+                                        size: 16,
+                                        color: Colors.blue,
+                                      ),
+                                    ],
+                                  ],
+                                ],
                               ),
                               subtitle: Text(
                                 '@${user['tag']}',
@@ -231,6 +316,8 @@ class _SearchUsersDialogState extends State<SearchUsersDialog> {
                               onTap: () => _openChat(
                                 user['id'],
                                 user['name'] ?? user['tag'],
+                                isBot: user['is_bot'] == true,
+                                botVerified: user['bot_verified'] == true,
                               ),
                             ),
                           ),

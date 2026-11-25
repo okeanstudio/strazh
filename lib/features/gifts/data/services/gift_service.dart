@@ -183,6 +183,27 @@ class GiftService {
     return Map<String, dynamic>.from(response);
   }
 
+  static Future<String> scheduleGift({
+    required String roomId,
+    required Gift gift,
+    required DateTime scheduledFor,
+    String caption = '',
+  }) async {
+    final response = await _supabase.rpc(
+      'schedule_chat_gift',
+      params: {
+        'p_room_id': roomId,
+        'p_gift_id': gift.id,
+        'p_caption': caption,
+        'p_scheduled_for': scheduledFor.toUtc().toIso8601String(),
+      },
+    );
+    if (response is! String || response.isEmpty) {
+      throw const FormatException('Не удалось создать отложенный подарок');
+    }
+    return response;
+  }
+
   static Future<void> grantGift({
     required String userId,
     required Gift gift,

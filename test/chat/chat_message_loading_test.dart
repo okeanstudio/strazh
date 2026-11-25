@@ -44,4 +44,29 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('message entrance can be disabled while navigating', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: ChatMessageEntrance(animate: false, child: Text('Подарок')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Подарок'), findsOneWidget);
+    final entrance = find.byType(ChatMessageEntrance);
+    expect(
+      find.descendant(of: entrance, matching: find.byType(FadeTransition)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: entrance, matching: find.byType(SlideTransition)),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
 }

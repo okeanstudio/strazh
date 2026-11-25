@@ -25,6 +25,7 @@ Future<void> openStoriesForProfile(
   BuildContext context,
   List<Story> stories, {
   required int initialIndex,
+  bool canDeleteStories = false,
 }) async {
   if (stories.isEmpty) return;
   final selectedStoryId = stories[initialIndex].id;
@@ -38,6 +39,7 @@ Future<void> openStoriesForProfile(
       builder: (_) => _StoryViewer(
         stories: orderedStories,
         initialIndex: orderedInitialIndex,
+        canDeleteStories: canDeleteStories,
       ),
     ),
   );
@@ -122,6 +124,9 @@ class _StoriesBarState extends State<StoriesBar> with WidgetsBindingObserver {
           initialIndex: 0,
           allAuthors: authors,
           initialAuthorIndex: initialAuthorIndex,
+          canDeleteStories:
+              widget.currentUserId != null &&
+              widget.currentUserId == authors[initialAuthorIndex].first.userId,
         ),
       ),
     );
@@ -749,12 +754,14 @@ class _StoryViewer extends StatefulWidget {
   final int initialIndex;
   final List<List<Story>>? allAuthors;
   final int initialAuthorIndex;
+  final bool canDeleteStories;
 
   const _StoryViewer({
     required this.stories,
     required this.initialIndex,
     this.allAuthors,
     this.initialAuthorIndex = 0,
+    this.canDeleteStories = false,
   });
 
   @override
@@ -767,6 +774,7 @@ class _StoryViewerState extends State<_StoryViewer>
   late int _index;
   late int _authorIndex;
   late final List<List<Story>> _authors;
+  bool _isDeleting = false;
 
   @override
   void initState() {
@@ -840,10 +848,58 @@ class _StoryViewerState extends State<_StoryViewer>
     Navigator.of(context).pop();
   }
 
+  Future<void> _confirmDeleteStory(Story story) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить сторис?'),
+        content: const Text('Она исчезнет из твоего профиля и ленты.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted || _isDeleting) return;
+
+    setState(() => _isDeleting = true);
+    try {
+      await StoriesService.delete(story);
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      final deletedButImageRemains = error.toString().contains(
+        'История удалена, но не удалось удалить',
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            deletedButImageRemains
+                ? 'Сторис удалена, но фото не удалось очистить с сервера.'
+                : 'Не удалось удалить сторис: $error',
+          ),
+        ),
+      );
+      if (deletedButImageRemains) {
+        Navigator.of(context).pop();
+      } else {
+        setState(() => _isDeleting = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final stories = _currentStories;
     final currentStory = stories[_index];
+    final canDeleteCurrentStory =
+        widget.canDeleteStories && currentStory.userId == stories.first.userId;
     final avatarUrl = currentStory.authorAvatarUrl;
     final avatarProvider = avatarUrl == null || avatarUrl.isEmpty
         ? null
@@ -1001,6 +1057,26 @@ class _StoryViewerState extends State<_StoryViewer>
                           _timeAgo(currentStory.createdAt),
                           style: const TextStyle(color: Colors.white70),
                         ),
+                        if (canDeleteCurrentStory)
+                          IconButton(
+                            tooltip: 'Удалить сторис',
+                            onPressed: _isDeleting
+                                ? null
+                                : () => _confirmDeleteStory(currentStory),
+                            icon: _isDeleting
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Icon(
+                                    Icons.delete_outline,
+                                    color: Colors.white,
+                                  ),
+                          ),
                         IconButton(
                           onPressed: () => Navigator.pop(context),
                           icon: const Icon(Icons.close, color: Colors.white),

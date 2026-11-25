@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 class VoiceRecorder extends StatefulWidget {
   final void Function(File audioFile) onSend;
+  final ValueChanged<bool>? onAudioRecordingChanged;
   final Future<void> Function()? onStartVideoNote;
   final Future<void> Function()? onStopVideoNote;
   final bool isVideoNoteActive;
@@ -13,6 +14,7 @@ class VoiceRecorder extends StatefulWidget {
   const VoiceRecorder({
     super.key,
     required this.onSend,
+    this.onAudioRecordingChanged,
     this.onStartVideoNote,
     this.onStopVideoNote,
     this.isVideoNoteActive = false,
@@ -70,7 +72,9 @@ class _VoiceRecorderState extends State<VoiceRecorder> {
         return;
       }
       setState(() => _isRecording = true);
+      widget.onAudioRecordingChanged?.call(true);
     } catch (e) {
+      widget.onAudioRecordingChanged?.call(false);
       if (mounted && session == _audioRecordingSession) {
         ScaffoldMessenger.of(
           context,
@@ -82,6 +86,7 @@ class _VoiceRecorderState extends State<VoiceRecorder> {
   Future<void> _stopRecording() async {
     try {
       final path = await _recorder.stop();
+      widget.onAudioRecordingChanged?.call(false);
       if (mounted) {
         setState(() => _isRecording = false);
       }
@@ -90,6 +95,7 @@ class _VoiceRecorderState extends State<VoiceRecorder> {
         widget.onSend(File(path));
       }
     } catch (e) {
+      widget.onAudioRecordingChanged?.call(false);
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -148,6 +154,7 @@ class _VoiceRecorderState extends State<VoiceRecorder> {
 
   @override
   void dispose() {
+    if (_isRecording) widget.onAudioRecordingChanged?.call(false);
     _recorder.dispose();
     super.dispose();
   }

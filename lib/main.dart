@@ -17,6 +17,7 @@ import 'package:strazh/features/home/presentation/screens/home.dart';
 import 'package:strazh/features/app/presentation/screens/update_required_screen.dart';
 import 'package:strazh/features/chat/data/services/fcm_service.dart';
 import 'package:strazh/core/services/supabase_initializer.dart';
+import 'package:strazh/core/config/firebase_web_config.dart';
 import 'package:strazh/core/config/firebase_options.dart';
 import 'package:strazh/features/settings/data/services/sound_service.dart';
 import 'package:strazh/features/auth/data/services/account_session_service.dart';
@@ -28,11 +29,14 @@ void main() async {
   // ===== FIREBASE =====
   var firebaseInitialized = false;
   try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    firebaseInitialized = true;
-    debugPrint('✅ Firebase инициализирован');
+    final options = kIsWeb
+        ? await FirebaseWebConfig.load()
+        : DefaultFirebaseOptions.currentPlatform;
+    if (options != null) {
+      await Firebase.initializeApp(options: options);
+      firebaseInitialized = true;
+      debugPrint('✅ Firebase инициализирован');
+    }
   } catch (e) {
     debugPrint('❌ Ошибка Firebase: $e');
   }
@@ -125,13 +129,13 @@ void main() async {
 
   // ===== FCM =====
   try {
-    if (!kIsWeb && firebaseInitialized) {
+    if (firebaseInitialized) {
       await FcmService().initialize();
       debugPrint('✅ FCM инициализирован');
     } else if (!kIsWeb) {
       debugPrint('FCM пропущен: Firebase не инициализирован');
     } else {
-      debugPrint('ℹ️ FCM не поддерживается на Web, пропускаем...');
+      debugPrint('ℹ️ Firebase Web Push не настроен');
     }
   } catch (e) {
     debugPrint('❌ Ошибка FCM: $e');

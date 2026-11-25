@@ -11,9 +11,63 @@ import 'package:strazh/features/admin/presentation/screens/admin_moderation_repo
 import 'package:strazh/features/admin/presentation/screens/admin_tree_of_users.dart';
 import 'package:strazh/features/admin/presentation/screens/admin_encoins.dart';
 import 'package:strazh/features/admin/presentation/screens/admin_gifts.dart';
+import 'package:strazh/features/admin/presentation/screens/admin_bots.dart';
+import 'package:strazh/features/auth/data/services/invite_registration_settings_service.dart';
+import 'package:strazh/shared/presentation/widgets/toast.dart';
 
-class AdminScreen extends StatelessWidget {
+class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
+
+  @override
+  State<AdminScreen> createState() => _AdminScreenState();
+}
+
+class _AdminScreenState extends State<AdminScreen> {
+  bool _isInviteCodeRequired = true;
+  bool _isLoadingInviteSetting = true;
+  bool _isUpdatingInviteSetting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadInviteSetting();
+  }
+
+  Future<void> _loadInviteSetting() async {
+    try {
+      final required = await InviteRegistrationSettingsService.instance
+          .isInviteCodeRequired();
+      if (!mounted) return;
+      setState(() {
+        _isInviteCodeRequired = required;
+        _isLoadingInviteSetting = false;
+      });
+    } catch (error) {
+      debugPrint('Не удалось загрузить настройку инвайт-кода: $error');
+      if (!mounted) return;
+      setState(() => _isLoadingInviteSetting = false);
+      Toast.error(context, 'Не удалось загрузить настройку регистрации');
+    }
+  }
+
+  Future<void> _setInviteCodeRequired(bool required) async {
+    if (_isUpdatingInviteSetting) return;
+    setState(() {
+      _isInviteCodeRequired = required;
+      _isUpdatingInviteSetting = true;
+    });
+    try {
+      await InviteRegistrationSettingsService.instance
+          .setInviteCodeRequired(required);
+    } catch (error) {
+      debugPrint('Не удалось изменить настройку инвайт-кода: $error');
+      if (!mounted) return;
+      setState(() => _isInviteCodeRequired = !required);
+      Toast.error(context, 'Не удалось изменить настройку регистрации');
+    } finally {
+      if (mounted) setState(() => _isUpdatingInviteSetting = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -134,6 +188,7 @@ class AdminScreen extends StatelessWidget {
                 mainAxisSpacing: 14,
                 childAspectRatio: 1.0,
                 children: [
+                  _buildInviteCodeToggle(),
                   _buildMenuItem(
                     context,
                     icon: Icons.people_alt,
@@ -201,6 +256,20 @@ class AdminScreen extends StatelessWidget {
                       context,
                       MaterialPageRoute(
                         builder: (_) => const AdminVerifiedScreen(),
+                      ),
+                    ),
+                  ),
+                  _buildMenuItem(
+                    context,
+                    icon: Icons.smart_toy,
+                    title: 'Боты',
+                    subtitle: 'Управление ботами и галочками',
+                    color: const Color(0xFF60A5FA),
+                    gradient: const [Color(0xFF60A5FA), Color(0xFF2563EB)],
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const AdminBotsScreen(),
                       ),
                     ),
                   ),
@@ -307,6 +376,66 @@ class AdminScreen extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildInviteCodeToggle() {
+    final enabled = _isInviteCodeRequired;
+    final color = enabled ? const Color(0xFF34D399) : Colors.orangeAccent;
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF171329), Color(0xFF100D18)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(11),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(Icons.card_giftcard, color: color, size: 26),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Регистрация по инвайту',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            _isLoadingInviteSetting
+                ? 'Загрузка настройки...'
+                : enabled
+                ? 'Код приглашения обязателен'
+                : 'Регистрация без инвайта',
+            maxLines: 2,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey[500], fontSize: 11),
+          ),
+          const SizedBox(height: 4),
+          Switch(
+            value: enabled,
+            onChanged: _isLoadingInviteSetting || _isUpdatingInviteSetting
+                ? null
+                : _setInviteCodeRequired,
+            activeThumbColor: const Color(0xFF34D399),
+          ),
+        ],
       ),
     );
   }

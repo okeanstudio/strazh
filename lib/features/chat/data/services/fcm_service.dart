@@ -6,6 +6,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:strazh/core/config/firebase_web_config.dart';
 import 'package:strazh/core/config/firebase_options.dart';
 import 'package:strazh/core/services/supabase_initializer.dart';
 import 'package:strazh/features/chat/data/services/notification_service.dart';
@@ -35,12 +36,22 @@ class FcmService {
   String? _registeredUserId;
 
   Future<void> initialize() async {
-    if (!_isMobilePlatform) return;
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    if (!_isSupportedPlatform) return;
+    if (!kIsWeb) {
+      FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    }
 
     if (!SoundService().settings.value.notificationsEnabled) {
       await setNotificationsEnabled(false);
       return;
+    }
+
+    if (kIsWeb) {
+      if (FirebaseWebConfig.vapidKey == null) return;
+      final settings = await _messaging.getNotificationSettings();
+      if (settings.authorizationStatus != AuthorizationStatus.authorized) {
+        return;
+      }
     }
 
     if (await _enableNotifications()) {
@@ -49,7 +60,8 @@ class FcmService {
   }
 
   Future<bool> setNotificationsEnabled(bool enabled) async {
-    if (!_isMobilePlatform) return true;
+    if (!_isSupportedPlatform) return true;
+    if (kIsWeb && FirebaseWebConfig.vapidKey == null) return false;
 
     try {
       if (!enabled) {
@@ -86,10 +98,10 @@ class FcmService {
     }
   }
 
-  bool get _isMobilePlatform =>
-      !kIsWeb &&
-      (defaultTargetPlatform == TargetPlatform.android ||
-          defaultTargetPlatform == TargetPlatform.iOS);
+  bool get _isSupportedPlatform =>
+      kIsWeb ||
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
 
   Future<bool> _enableNotifications() async {
     final permission = await _messaging.requestPermission(
@@ -102,7 +114,7 @@ class FcmService {
         permission.authorizationStatus == AuthorizationStatus.provisional;
     if (!isAuthorized) return false;
 
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
       String? apnsToken;
       for (var attempt = 0; attempt < 10 && apnsToken == null; attempt++) {
         apnsToken = await _messaging.getAPNSToken();
@@ -116,7 +128,10 @@ class FcmService {
       }
     }
 
-    final token = await _messaging.getToken();
+    final token = await _messaging.getToken(
+      vapidKey: kIsWeb ? FirebaseWebConfig.vapidKey : null,
+      serviceWorkerScriptPath: kIsWeb ? 'firebase-messaging-sw.js' : null,
+    );
     if (token != null) await _saveTokenToSupabase(token);
 
     _tokenRefreshSubscription ??= _messaging.onTokenRefresh.listen(
@@ -190,7 +205,7 @@ class FcmService {
       await Supabase.instance.client.from('user_devices').upsert({
         'user_id': userId,
         'fcm_token': token,
-        'platform': 'mobile',
+        'platform': kIsWeb ? 'web' : 'mobile',
         'updated_at': DateTime.now().toIso8601String(),
       }, onConflict: 'fcm_token');
       final preferences = await SharedPreferences.getInstance();

@@ -92,7 +92,12 @@ class _LoginScreenState extends State<LoginScreen> {
       await authService.saveUser(metadata?['tag'] ?? _username, user!.id);
 
       if (mounted) {
-        Toast.success(context, 'Добро пожаловать, @$_username');
+        final backupWarning = authService.encryptionBackupWarning;
+        if (backupWarning == null) {
+          Toast.success(context, 'Добро пожаловать, @$_username');
+        } else {
+          Toast.warning(context, backupWarning);
+        }
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => const HomeScreen()),

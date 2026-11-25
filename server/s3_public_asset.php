@@ -2,6 +2,8 @@
 
 require_once __DIR__ . '/s3_storage_common.php';
 
+s3_public_asset_cors();
+
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET') {
     http_response_code(405);
     exit();
@@ -45,3 +47,29 @@ header('Location: ' . s3_storage_presign(
     300
 ), true, 302);
 exit();
+
+function s3_public_asset_cors()
+{
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    $allowedOrigins = array_filter(array_map(
+        'trim',
+        explode(',', (string) (
+            getenv('S3_ALLOWED_ORIGINS') ?:
+            'https://strazh.chat,https://www.strazh.chat,https://web.strazh.chat'
+        ))
+    ));
+
+    header('Vary: Origin');
+    header('Access-Control-Allow-Methods: GET, OPTIONS');
+    header('Access-Control-Allow-Headers: Content-Type');
+    header('Access-Control-Max-Age: 600');
+
+    if ($origin !== '' && in_array($origin, $allowedOrigins, true)) {
+        header('Access-Control-Allow-Origin: ' . $origin);
+    }
+
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
+        http_response_code(204);
+        exit();
+    }
+}

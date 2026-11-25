@@ -17,6 +17,7 @@ import 'package:strazh/features/chat/presentation/widgets/create_chat/create_gro
 import 'package:strazh/features/chat/presentation/widgets/create_chat/create_channel.dart';
 import 'package:strazh/features/stories/presentation/screens/stories_screen.dart'
     show StoriesBar;
+import 'package:strazh/shared/presentation/widgets/volt_badge.dart';
 
 class HomeDesktopScreen extends StatefulWidget {
   const HomeDesktopScreen({super.key});
@@ -1709,6 +1710,8 @@ class _HomeDesktopScreenState extends State<HomeDesktopScreen> {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                        if (chat.hasVoltStreak)
+                          VoltBadge(extendedToday: chat.voltExtendedToday),
                         if (chat.type == 'channel' && chat.isVerified) ...[
                           const SizedBox(width: 5),
                           const Icon(

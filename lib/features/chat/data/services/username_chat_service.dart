@@ -18,6 +18,16 @@ class UsernameChatService {
     final normalizedUsername = username.trim().replaceFirst(RegExp(r'^@'), '');
     if (normalizedUsername.isEmpty) return null;
 
+    final botRecord = await _supabase
+        .from('bots')
+        .select('id, name, tag, avatar_url, is_verified')
+        .ilike('tag', normalizedUsername.toLowerCase())
+        .eq('is_enabled', true)
+        .maybeSingle();
+    if (botRecord != null) {
+      return _findOrCreateBotChat(botRecord);
+    }
+
     final lookupResponse = await _supabase.rpc(
       'get_user_by_tag_ci',
       params: {'p_tag': normalizedUsername},
@@ -52,7 +62,8 @@ class UsernameChatService {
       throw StateError('Нельзя открыть чат с самим собой');
     }
 
-    final roomId = await _findDirectRoom(currentUserId, targetUserId) ??
+    final roomId =
+        await _findDirectRoom(currentUserId, targetUserId) ??
         await _createDirectRoom(currentUserId, targetUserId);
 
     return UsernameChat(
@@ -63,6 +74,85 @@ class UsernameChatService {
         type: 'direct',
       ),
       user: targetUser,
+    );
+  }
+
+  static Future<UsernameChat> _findOrCreateBotChat(
+    Map<String, dynamic> botRecord,
+  ) async {
+    final botId = botRecord['id'].toString();
+    final bot = app.User(
+      id: botId,
+      name: botRecord['name']?.toString() ?? 'Бот',
+      tag: botRecord['tag']?.toString() ?? '',
+      avatarUrl: botRecord['avatar_url']?.toString(),
+      isBot: true,
+      botVerified: botRecord['is_verified'] == true,
+    );
+    final currentUserId = AuthService().currentUserId;
+    if (currentUserId == null) {
+      throw StateError('Не удалось определить текущего пользователя');
+    }
+
+    final existingBotRooms = await _supabase
+        .from('bot_chat_participants')
+        .select('room_id')
+        .eq('bot_id', botId);
+    final botRoomIds = existingBotRooms
+        .map((row) => row['room_id'].toString())
+        .toList();
+    String? roomId;
+    if (botRoomIds.isNotEmpty) {
+      final myRooms = await _supabase
+          .from('room_participants')
+          .select('room_id')
+          .eq('user_id', currentUserId)
+          .inFilter('room_id', botRoomIds);
+      for (final row in myRooms) {
+        final room = await _supabase
+            .from('rooms')
+            .select('id, type')
+            .eq('id', row['room_id'])
+            .maybeSingle();
+        if (room?['type'] == 'direct') {
+          roomId = room!['id'].toString();
+          break;
+        }
+      }
+    }
+
+    if (roomId == null) {
+      final room = await _supabase
+          .from('rooms')
+          .insert({
+            'type': 'direct',
+            'created_by': currentUserId,
+            'created_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .select('id')
+          .single();
+      roomId = room['id'].toString();
+      await _supabase.from('room_participants').insert({
+        'room_id': roomId,
+        'user_id': currentUserId,
+        'joined_at': DateTime.now().toUtc().toIso8601String(),
+      });
+      await _supabase.rpc(
+        'add_bot_to_direct_chat',
+        params: {'p_room_id': roomId, 'p_bot_id': botId},
+      );
+    }
+
+    return UsernameChat(
+      chat: Chat(
+        id: roomId,
+        name: bot.name,
+        avatarUrl: bot.avatarUrl,
+        type: 'direct',
+        isBot: true,
+        botVerified: bot.botVerified,
+      ),
+      user: bot,
     );
   }
 

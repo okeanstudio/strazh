@@ -78,7 +78,7 @@ async function sendPush(message: Record<string, unknown>) {
       .from("user_devices")
       .select("user_id,fcm_token")
       .in("user_id", notifiedRecipientIds)
-      .eq("platform", "mobile");
+      .in("platform", ["mobile", "web"]);
     if (devicesError) throw devicesError;
     const recipientDevices = devices?.filter(
       (device) => String(device.user_id) !== senderId,

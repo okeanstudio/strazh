@@ -29,7 +29,7 @@ class FileUploadService {
         bucket: _bucketName,
         path: filePath,
         bytes: fileBytes,
-        contentType: _getMimeType(cleanFileName),
+        contentType: getMimeType(cleanFileName),
         onProgress: onProgress ?? (_, _) {},
       );
 
@@ -45,7 +45,7 @@ class FileUploadService {
         .replaceAll(RegExp(r'_+'), '_');
   }
 
-  String _getMimeType(String fileName) {
+  static String getMimeType(String fileName) {
     final extension = fileName.split('.').last.toLowerCase();
     switch (extension) {
       case 'pdf':
@@ -76,8 +76,44 @@ class FileUploadService {
         return 'application/xml';
       case 'csv':
         return 'text/csv';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'm4a':
+        return 'audio/mp4';
+      case 'aac':
+        return 'audio/aac';
+      case 'wav':
+        return 'audio/wav';
+      case 'ogg':
+        return 'audio/ogg';
+      case 'flac':
+        return 'audio/flac';
+      case 'opus':
+        return 'audio/opus';
       default:
         return 'application/octet-stream';
+    }
+  }
+
+  static Future<file_selector.XFile?> pickMusic() async {
+    try {
+      const types = [
+        file_selector.XTypeGroup(
+          label: 'Музыка',
+          extensions: ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'opus'],
+        ),
+      ];
+      return await file_selector.openFile(acceptedTypeGroups: types);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<List<file_selector.XFile>> pickFiles() async {
+    try {
+      return await file_selector.openFiles();
+    } catch (_) {
+      return const [];
     }
   }
 

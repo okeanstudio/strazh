@@ -245,6 +245,63 @@ function s3_storage_authorize(
         if (!s3_storage_is_uuid($first)) {
             s3_storage_respond(400, ['message' => 'Некорректный путь вложения']);
         }
+        if (!$isWrite) {
+            $pathFilter = static function ($column) use ($path) {
+                return $column . '.eq.' . rawurlencode($path);
+            };
+            $matchingMessages = s3_storage_query_as_user(
+                $config,
+                $token,
+                'messages',
+                'select=id,profile_id,view_once&room_id=eq.' .
+                    rawurlencode($first) .
+                    '&or=(' . $pathFilter('file_url') . ',' .
+                    $pathFilter('voice_url') . ',' .
+                    $pathFilter('encrypted_content') . ')&limit=2'
+            );
+            if (
+                $matchingMessages['status'] < 200 ||
+                $matchingMessages['status'] >= 300 ||
+                !is_array($matchingMessages['data'])
+            ) {
+                s3_storage_respond(
+                    403,
+                    ['message' => 'Не удалось проверить доступ к медиа']
+                );
+            }
+            foreach ($matchingMessages['data'] as $message) {
+                if (
+                    ($message['view_once'] ?? false) !== true ||
+                    (string) ($message['profile_id'] ?? '') === $userId
+                ) {
+                    continue;
+                }
+
+                $view = s3_storage_query_as_user(
+                    $config,
+                    $token,
+                    'message_media_views',
+                    'select=message_id&message_id=eq.' .
+                        rawurlencode((string) $message['id']) .
+                        '&viewer_id=eq.' . rawurlencode($userId) .
+                        '&viewed_at=gt.' . rawurlencode(
+                            gmdate('Y-m-d\TH:i:s\Z', time() - 30)
+                        ) .
+                        '&limit=1'
+                );
+                if (
+                    $view['status'] < 200 ||
+                    $view['status'] >= 300 ||
+                    !is_array($view['data']) ||
+                    count($view['data']) === 0
+                ) {
+                    s3_storage_respond(
+                        403,
+                        ['message' => 'Это медиа уже просмотрено']
+                    );
+                }
+            }
+        }
         $membership = s3_storage_query_as_user(
             $config,
             $token,
@@ -285,6 +342,32 @@ function s3_storage_authorize(
             count($publicChannel['data']) > 0
         ) {
             return;
+        }
+        if (!$isWrite) {
+            $profileMusic = s3_storage_http_request(
+                $config['supabase_url'] .
+                    '/rest/v1/rpc/can_read_profile_music_path',
+                'POST',
+                [
+                    'apikey: ' . $config['supabase_anon_key'],
+                    'Authorization: Bearer ' . $token,
+                    'Content-Type: application/json',
+                    'Accept: application/json',
+                ],
+                json_encode(['p_path' => $path])
+            );
+            if (
+                $profileMusic['status'] === 200 &&
+                $profileMusic['data'] === true
+            ) {
+                return;
+            }
+            if ($profileMusic['status'] >= 500) {
+                error_log(
+                    'S3 storage profile music authorization failed: ' .
+                        $profileMusic['status']
+                );
+            }
         }
         s3_storage_respond(403, ['message' => 'Файл недоступен']);
     }

@@ -4,8 +4,13 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:strazh/core/config/firebase_web_config.dart';
+import 'package:strazh/core/platform/web_install_platform_stub.dart'
+    if (dart.library.html) 'package:strazh/core/platform/web_install_platform.dart'
+    as web_install;
 import 'package:strazh/shared/presentation/widgets/bottom_nav_bar.dart';
 import 'package:strazh/features/chat/presentation/widgets/chat_tile.dart';
 import 'package:strazh/features/chat/data/services/chat_service.dart';
@@ -24,6 +29,7 @@ import 'package:strazh/features/chat/presentation/screens/chat.dart';
 import 'package:strazh/features/settings/presentation/screens/settings.dart';
 import 'package:strazh/features/profile/presentation/screens/profile.dart';
 import 'package:strazh/features/chat/data/services/notification_service.dart';
+import 'package:strazh/features/chat/data/services/fcm_service.dart';
 import 'package:strazh/features/stories/presentation/screens/stories_screen.dart';
 import 'package:strazh/features/home/presentation/screens/home_desktop.dart';
 import 'package:strazh/shared/presentation/widgets/strzh_s_loader.dart';
@@ -60,6 +66,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final acceptanceKey = 'usage_policy_accepted_${user.id}_$_policyVersion';
       if (preferences.getBool(acceptanceKey) == true) {
         if (mounted) setState(() => _isCheckingPolicy = false);
+        await _showIosWebPushSetup();
         return;
       }
 
@@ -75,6 +82,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _isCheckingPolicy = false;
           });
         }
+        await _showIosWebPushSetup();
         return;
       }
 
@@ -92,6 +100,85 @@ class _HomeScreenState extends State<HomeScreen> {
         _isCheckingPolicy = false;
       });
     }
+  }
+
+  Future<void> _showIosWebPushSetup() async {
+    if (!kIsWeb || !web_install.isIOSBrowser || !mounted) return;
+
+    if (!web_install.isStandaloneApp) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Уведомления на iPhone'),
+          content: const Text(
+            'Чтобы получать уведомления, сначала добавь Strazh на экран '
+            '«Домой»: нажми «Поделиться» в Safari → «На экран Домой», затем '
+            'открой приложение с новой иконки.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Понятно'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    if (!web_install.supportsWebPush || !FirebaseWebConfig.isConfigured) {
+      return;
+    }
+
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return;
+    final preferences = await SharedPreferences.getInstance();
+    final dismissedKey = 'ios_web_push_prompt_dismissed_$userId';
+    if (preferences.getBool(dismissedKey) == true) return;
+
+    final permission = await FirebaseMessaging.instance
+        .getNotificationSettings();
+    if (permission.authorizationStatus != AuthorizationStatus.notDetermined) {
+      return;
+    }
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Включить уведомления?'),
+        content: const Text(
+          'Разреши уведомления, чтобы получать сообщения, когда Strazh '
+          'закрыт.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await preferences.setBool(dismissedKey, true);
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
+            },
+            child: const Text('Не сейчас'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final enabled = await FcmService().setNotificationsEnabled(true);
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+              if (!enabled && mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Не удалось включить push. Проверь разрешение Safari.',
+                    ),
+                  ),
+                );
+              }
+            },
+            child: const Text('Включить'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -723,10 +810,59 @@ class _HomeMobileScreenState extends State<HomeMobileScreen>
     );
   }
 
-  Future<String?> _getOrCreateDirectChat(String otherUserId) async {
+  Future<String?> _getOrCreateDirectChat(
+    String otherUserId, {
+    required bool isBot,
+  }) async {
     final supabase = Supabase.instance.client;
     final currentUserId = _currentUserId;
     if (currentUserId == null) return null;
+
+    if (isBot) {
+      final botChats = await supabase
+          .from('bot_chat_participants')
+          .select('room_id')
+          .eq('bot_id', otherUserId);
+      final botRoomIds = botChats
+          .map((row) => row['room_id'] as String)
+          .toList();
+      if (botRoomIds.isNotEmpty) {
+        final myBotChats = await supabase
+            .from('room_participants')
+            .select('room_id')
+            .eq('user_id', currentUserId)
+            .inFilter('room_id', botRoomIds);
+        for (final chat in myBotChats) {
+          final room = await supabase
+              .from('rooms')
+              .select('type')
+              .eq('id', chat['room_id'])
+              .maybeSingle();
+          if (room?['type'] == 'direct') return chat['room_id'] as String;
+        }
+      }
+
+      final room = await supabase
+          .from('rooms')
+          .insert({
+            'type': 'direct',
+            'created_by': currentUserId,
+            'created_at': DateTime.now().toIso8601String(),
+          })
+          .select('id')
+          .single();
+      final roomId = room['id'] as String;
+      await supabase.from('room_participants').insert({
+        'room_id': roomId,
+        'user_id': currentUserId,
+        'joined_at': DateTime.now().toIso8601String(),
+      });
+      await supabase.rpc(
+        'add_bot_to_direct_chat',
+        params: {'p_room_id': roomId, 'p_bot_id': otherUserId},
+      );
+      return roomId;
+    }
 
     final existingChats = await supabase
         .from('room_participants')
@@ -804,10 +940,12 @@ class _HomeMobileScreenState extends State<HomeMobileScreen>
   Future<void> _openChatWithUser(
     String userId,
     String userName,
-    String? avatarUrl,
-  ) async {
+    String? avatarUrl, {
+    bool isBot = false,
+    bool botVerified = false,
+  }) async {
     try {
-      final roomId = await _getOrCreateDirectChat(userId);
+      final roomId = await _getOrCreateDirectChat(userId, isBot: isBot);
       if (roomId != null && mounted && _currentUser != null) {
         final existingChat = _chats
             .where((chat) => chat.id == roomId)
@@ -819,6 +957,8 @@ class _HomeMobileScreenState extends State<HomeMobileScreen>
               name: userName,
               avatarUrl: avatarUrl,
               type: 'direct',
+              isBot: isBot,
+              botVerified: botVerified,
             );
         Navigator.push(
           context,
@@ -1930,9 +2070,32 @@ class _HomeMobileScreenState extends State<HomeMobileScreen>
                 color: Colors.transparent,
                 child: ListTile(
                   leading: _buildSearchUserAvatar(user),
-                  title: Text(
-                    user['name'] ?? 'Без имени',
-                    style: const TextStyle(color: Colors.white),
+                  title: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          user['name'] ?? 'Без имени',
+                          style: const TextStyle(color: Colors.white),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (user['is_bot'] == true) ...[
+                        const SizedBox(width: 5),
+                        const Icon(
+                          Icons.smart_toy,
+                          size: 16,
+                          color: Color(0xFFB89AFF),
+                        ),
+                        if (user['bot_verified'] == true) ...[
+                          const SizedBox(width: 3),
+                          const Icon(
+                            Icons.verified,
+                            size: 16,
+                            color: Color(0xFF1A73E8),
+                          ),
+                        ],
+                      ],
+                    ],
                   ),
                   subtitle: Text(
                     '@${user['tag']}',
@@ -1942,6 +2105,8 @@ class _HomeMobileScreenState extends State<HomeMobileScreen>
                     user['id'].toString(),
                     user['name']?.toString() ?? user['tag']?.toString() ?? '',
                     user['avatar_url']?.toString(),
+                    isBot: user['is_bot'] == true,
+                    botVerified: user['bot_verified'] == true,
                   ),
                 ),
               ),

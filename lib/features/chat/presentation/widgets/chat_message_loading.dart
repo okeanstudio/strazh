@@ -100,11 +100,13 @@ class _ChatMessageLoadingState extends State<ChatMessageLoading>
 class ChatMessageEntrance extends StatefulWidget {
   final Widget child;
   final Duration delay;
+  final bool animate;
 
   const ChatMessageEntrance({
     super.key,
     required this.child,
     this.delay = Duration.zero,
+    this.animate = true,
   });
 
   @override
@@ -147,7 +149,7 @@ class _ChatMessageEntranceState extends State<ChatMessageEntrance>
 
   @override
   Widget build(BuildContext context) {
-    if (MediaQuery.disableAnimationsOf(context)) {
+    if (!widget.animate || MediaQuery.disableAnimationsOf(context)) {
       return widget.child;
     }
     return FadeTransition(

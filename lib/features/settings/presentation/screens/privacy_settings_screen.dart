@@ -22,6 +22,7 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
     'show_status': true,
     'show_last_seen': true,
     'show_profile_picture': true,
+    'show_profile_music': true,
     'block_unknown': false,
     'hide_expired_stories': false,
   };
@@ -286,6 +287,16 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
               onChanged: (value) {
                 setState(() {
                   _privacySettings['show_profile_picture'] = value;
+                });
+              },
+            ),
+            _buildSwitchSetting(
+              title: 'Показывать музыку профиля',
+              subtitle: 'Другие пользователи смогут слушать вашу музыку',
+              value: _privacySettings['show_profile_music'] ?? true,
+              onChanged: (value) {
+                setState(() {
+                  _privacySettings['show_profile_music'] = value;
                 });
               },
             ),

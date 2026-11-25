@@ -55,6 +55,34 @@ class StoriesService {
     }
   }
 
+  static Future<void> delete(Story story) async {
+    final userId = _supabase.auth.currentUser?.id;
+    if (userId == null) throw StateError('Для удаления истории нужно войти');
+    if (userId != story.userId) {
+      throw StateError('Можно удалить только свою историю');
+    }
+
+    final deleted = await _supabase
+        .from('stories')
+        .delete()
+        .eq('id', story.id)
+        .eq('user_id', userId)
+        .select('id, image_url');
+    if (deleted.isEmpty) {
+      throw StateError('История не найдена или уже удалена');
+    }
+
+    storiesRevision.value++;
+    final imagePath = deleted.first['image_url'] as String?;
+    if (imagePath == null) return;
+    try {
+      await StorageUploadService.remove(bucket: 'stories', path: imagePath);
+    } catch (error) {
+      debugPrint('История удалена, но не удалось удалить её фото: $error');
+      throw StateError('История удалена, но не удалось удалить её фото');
+    }
+  }
+
   static Future<List<Story>> _attachSignedImageUrls(
     List<Story> stories, {
     required bool activeOnly,

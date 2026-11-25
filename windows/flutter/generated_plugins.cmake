@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   app_links
   audioplayers_windows
   connectivity_plus
+  desktop_drop
   desktop_webview_window
   emoji_picker_flutter
   ffmpeg_kit_flutter_new_min

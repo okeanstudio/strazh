@@ -5,6 +5,7 @@ import 'package:strazh/features/chat/presentation/screens/chat.dart';
 import 'package:strazh/features/auth/presentation/screens/login_codes_chat_screen.dart';
 import 'package:strazh/shared/domain/models/user.dart' as app;
 import 'package:strazh/shared/presentation/widgets/avatar_preview.dart';
+import 'package:strazh/shared/presentation/widgets/volt_badge.dart';
 
 class ChatTile extends StatefulWidget {
   final Chat chat;
@@ -94,8 +95,16 @@ class _ChatTileState extends State<ChatTile>
   @override
   Widget build(BuildContext context) {
     final hasUnread = widget.chat.unreadCount > 0;
+    final isBotFather =
+        widget.chat.isBot && widget.chat.name.toLowerCase() == 'botfather';
     final avatarUrl = widget.chat.avatarUrl;
-    final hasAvatar = avatarUrl != null && avatarUrl.isNotEmpty;
+    final hasAvatar =
+        isBotFather || (avatarUrl != null && avatarUrl.isNotEmpty);
+    final ImageProvider? avatarImage = isBotFather
+        ? const AssetImage('assets/icon/bots/botfather_strazh.jpg')
+        : hasAvatar
+        ? NetworkImage(avatarUrl!)
+        : null;
 
     return FadeTransition(
       opacity: _entryOpacity,
@@ -155,15 +164,13 @@ class _ChatTileState extends State<ChatTile>
                         onTap: hasAvatar
                             ? () => showAvatarPreview(
                                 context,
-                                image: NetworkImage(avatarUrl),
+                                image: avatarImage!,
                               )
                             : null,
                         child: CircleAvatar(
                           radius: 26,
                           backgroundColor: const Color(0xFF29262A),
-                          backgroundImage: hasAvatar
-                              ? NetworkImage(avatarUrl)
-                              : null,
+                          backgroundImage: avatarImage,
                           child: !hasAvatar
                               ? (widget.chat.type == 'saved'
                                     ? const Icon(
@@ -205,6 +212,10 @@ class _ChatTileState extends State<ChatTile>
                                 ),
                               ),
                             ),
+                            if (widget.chat.hasVoltStreak)
+                              VoltBadge(
+                                extendedToday: widget.chat.voltExtendedToday,
+                              ),
                             if (widget.chat.type == 'channel' &&
                                 widget.chat.isVerified) ...[
                               const SizedBox(width: 5),
@@ -213,6 +224,22 @@ class _ChatTileState extends State<ChatTile>
                                 color: Color(0xFF1A73E8),
                                 size: 16,
                               ),
+                            ],
+                            if (widget.chat.isBot) ...[
+                              const SizedBox(width: 5),
+                              const Icon(
+                                Icons.smart_toy,
+                                color: Color(0xFFB89AFF),
+                                size: 16,
+                              ),
+                              if (widget.chat.botVerified) ...[
+                                const SizedBox(width: 3),
+                                const Icon(
+                                  Icons.verified,
+                                  color: Color(0xFF1A73E8),
+                                  size: 16,
+                                ),
+                              ],
                             ],
                             if (widget.isPinned) ...[
                               const SizedBox(width: 6),

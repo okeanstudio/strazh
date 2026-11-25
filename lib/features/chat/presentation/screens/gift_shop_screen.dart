@@ -141,6 +141,77 @@ class _GiftShopScreenState extends State<GiftShopScreen> {
     }
   }
 
+  Future<void> _scheduleSelectedGift() async {
+    final gift = _selectedGift;
+    if (gift == null || _isSending || _upgradeToNft) return;
+
+    final now = DateTime.now();
+    final selectedDate = await showDatePicker(
+      context: context,
+      initialDate: now,
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365)),
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: const ColorScheme.dark(
+            primary: Color(0xFF43B5F5),
+            surface: Color(0xFF192630),
+          ),
+        ),
+        child: child!,
+      ),
+    );
+    if (selectedDate == null || !mounted) return;
+
+    final selectedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(now.add(const Duration(minutes: 5))),
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: const ColorScheme.dark(
+            primary: Color(0xFF43B5F5),
+            surface: Color(0xFF192630),
+          ),
+        ),
+        child: child!,
+      ),
+    );
+    if (selectedTime == null || !mounted) return;
+
+    final scheduledFor = DateTime(
+      selectedDate.year,
+      selectedDate.month,
+      selectedDate.day,
+      selectedTime.hour,
+      selectedTime.minute,
+    );
+    if (scheduledFor.isBefore(DateTime.now().add(const Duration(seconds: 30)))) {
+      Toast.warning(context, 'Выберите время хотя бы на минуту позже');
+      return;
+    }
+
+    setState(() => _isSending = true);
+    try {
+      await GiftService.scheduleGift(
+        roomId: widget.roomId,
+        gift: gift,
+        scheduledFor: scheduledFor,
+        caption: _captionController.text.trim(),
+      );
+      if (!mounted) return;
+      Toast.success(
+        context,
+        'Подарок запланирован на ${selectedTime.format(context)}',
+      );
+      Navigator.pop(context, true);
+    } catch (error) {
+      if (!mounted) return;
+      Toast.error(context, 'Не удалось запланировать подарок: $error');
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+    }
+  }
+
   Future<void> _sendSelectedPlan(_GiftSubscriptionPlan plan) async {
     if (_isSending) return;
     if (_balance < plan.priceEnc) {
@@ -359,28 +430,50 @@ class _GiftShopScreenState extends State<GiftShopScreen> {
                     top: false,
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: _isSending || !canAffordSelectedGift
-                              ? null
-                              : _sendSelectedGift,
-                          icon: _isSending
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.send_rounded),
-                          label: Text('Подарить за $selectedGiftCost ENC'),
-                          style: FilledButton.styleFrom(
-                            backgroundColor: const Color(0xFF43B5F5),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            tooltip: _upgradeToNft
+                                ? 'NFT-подарки нельзя отложить'
+                                : 'Отправить позже',
+                            onPressed:
+                                _isSending ||
+                                    !canAffordSelectedGift ||
+                                    _upgradeToNft
+                                ? null
+                                : _scheduleSelectedGift,
+                            icon: const Icon(Icons.schedule_rounded),
+                            style: IconButton.styleFrom(
+                              foregroundColor: const Color(0xFF43B5F5),
+                              backgroundColor: const Color(0xFF203D53),
+                            ),
                           ),
-                        ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: _isSending || !canAffordSelectedGift
+                                  ? null
+                                  : _sendSelectedGift,
+                              icon: _isSending
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.send_rounded),
+                              label: Text('Подарить за $selectedGiftCost ENC'),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFF43B5F5),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),

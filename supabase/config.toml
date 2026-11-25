@@ -9,3 +9,6 @@ verify_jwt = false
 
 [functions.list-phone-login-challenges]
 verify_jwt = true
+
+[functions.bot-api]
+verify_jwt = false

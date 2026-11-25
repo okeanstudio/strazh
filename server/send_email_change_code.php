@@ -279,6 +279,32 @@ function code_hash($userId, $code, $secret)
 
 function send_email($email, $code)
 {
+    $host = trim((string) (getenv('SMTP_HOST') ?: 'mail.okeanstudio.ru'));
+    $username = trim((string) getenv('SMTP_USERNAME'));
+    $password = (string) getenv('SMTP_PASSWORD');
+    $encryption = strtolower(trim((string) (getenv('SMTP_ENCRYPTION') ?: 'ssl')));
+    $portValue = trim((string) (getenv('SMTP_PORT') ?: '465'));
+    $fromEmail = trim((string) (getenv('SMTP_FROM_EMAIL') ?: $username));
+    $fromName = trim((string) (getenv('SMTP_FROM_NAME') ?: 'Strazh'));
+
+    if ($username === '' || $password === '') {
+        error_log('Email change SMTP is not configured: SMTP_USERNAME or SMTP_PASSWORD is missing');
+        respond(503, false, 'SMTP не настроен на сервере. Проверьте SMTP_USERNAME и SMTP_PASSWORD.');
+    }
+
+    $port = filter_var($portValue, FILTER_VALIDATE_INT, [
+        'options' => ['min_range' => 1, 'max_range' => 65535],
+    ]);
+    if (
+        $host === '' ||
+        $port === false ||
+        !in_array($encryption, ['ssl', 'tls'], true) ||
+        !filter_var($fromEmail, FILTER_VALIDATE_EMAIL)
+    ) {
+        error_log('Email change SMTP configuration is invalid');
+        respond(503, false, 'Неверно настроены параметры SMTP на сервере.');
+    }
+
     $phpmailerPath = __DIR__ . '/PHPMailer/';
     foreach (['Exception.php', 'PHPMailer.php', 'SMTP.php'] as $file) {
         if (!file_exists($phpmailerPath . $file)) {
@@ -295,12 +321,14 @@ function send_email($email, $code)
 
     try {
         $mail->isSMTP();
-        $mail->Host = 'mail.okeanstudio.ru';
+        $mail->Host = $host;
         $mail->SMTPAuth = true;
-        $mail->Username = 'no-reply';
-        $mail->Password = 'pythonJavaCplusplus2013';
-        $mail->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
-        $mail->Port = 465;
+        $mail->Username = $username;
+        $mail->Password = $password;
+        $mail->SMTPSecure = $encryption === 'ssl'
+            ? \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS
+            : \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = $port;
         $mail->CharSet = 'UTF-8';
         $mail->SMTPOptions = [
             'ssl' => [
@@ -310,7 +338,7 @@ function send_email($email, $code)
             ],
         ];
 
-        $mail->setFrom('no-reply@okeanstudio.ru', 'Strazh');
+        $mail->setFrom($fromEmail, $fromName);
         $mail->addAddress($email);
         $mail->Subject = 'Подтверждение смены email в Strazh';
         $mail->isHTML(true);
@@ -339,6 +367,13 @@ function send_email($email, $code)
         $mail->send();
     } catch (\PHPMailer\PHPMailer\Exception $exception) {
         error_log('PHPMailer email change error: ' . $mail->ErrorInfo);
+        if (stripos($mail->ErrorInfo, 'authenticate') !== false) {
+            respond(
+                502,
+                false,
+                'SMTP-сервер отклонил авторизацию. Проверьте SMTP_USERNAME и SMTP_PASSWORD на сервере.'
+            );
+        }
         respond(500, false, 'Не удалось отправить письмо: ' . $mail->ErrorInfo);
     } catch (\Throwable $exception) {
         error_log('Email change send error: ' . $exception->getMessage());

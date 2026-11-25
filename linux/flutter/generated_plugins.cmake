@@ -4,6 +4,7 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   audioplayers_linux
+  desktop_drop
   desktop_webview_window
   emoji_picker_flutter
   ffmpeg_kit_flutter_new_min

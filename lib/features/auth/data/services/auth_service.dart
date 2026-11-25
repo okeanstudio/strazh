@@ -1,4 +1,3 @@
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6,8 +5,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:strazh/features/auth/data/services/account_session_service.dart';
 import 'package:strazh/shared/domain/models/user.dart' as app;
 import 'package:strazh/core/utils/rpc_user.dart';
+import 'package:strazh/features/chat/data/services/end_to_end_encryption_service.dart';
 
 class AuthService {
+  String? encryptionBackupWarning;
+
   // ========== РАБОТА С ХРАНИЛИЩЕМ ==========
   static Future<String?> _readStorage(String key) async {
     if (kIsWeb) {
@@ -184,6 +186,45 @@ class AuthService {
         throw Exception('Сессия не была создана после входа');
       }
 
+      encryptionBackupWarning = null;
+      final encryption = EndToEndEncryptionService.instance;
+      try {
+        await encryption.syncKeyVaultWithServerEscrow(
+          createDeviceIfMissing: false,
+        );
+      } catch (error) {
+        debugPrint('Не удалось восстановить серверную копию E2EE: $error');
+        encryptionBackupWarning =
+            'Серверное восстановление ключей недоступно. Проверьте '
+            'миграцию E2EE; SMS-восстановление не настроено.';
+      }
+      try {
+        await encryption.syncKeyVaultWithPassword(
+          password,
+          createIfMissing: false,
+        );
+      } catch (error) {
+        debugPrint('Не удалось восстановить ключи чатов при входе: $error');
+        if (error is MissingKeyVaultBackupException) {
+          encryptionBackupWarning =
+              'Резервная копия ключей не найдена: старые сообщения '
+              'не восстановлены.';
+          try {
+            await encryption.syncKeyVaultWithPassword(password);
+          } catch (backupError) {
+            debugPrint(
+              'Не удалось создать новую резервную копию ключей: $backupError',
+            );
+            encryptionBackupWarning =
+                'Старая копия ключей не найдена, а новую создать не удалось. '
+                'Проверьте миграцию E2EE на сервере.';
+          }
+        } else {
+          encryptionBackupWarning ??=
+              'Не удалось восстановить ключи. Проверьте миграцию E2EE '
+              'на сервере; старые сообщения могут быть недоступны.';
+        }
+      }
       await AccountSessionService().registerCurrentEncryptionDevice();
       debugPrint('✅ Вход выполнен через Supabase Auth');
       await _writeStorage('is_logged_in', 'true');
@@ -208,7 +249,28 @@ class AuthService {
       email: email,
       password: currentPassword,
     );
-    await client.auth.updateUser(UserAttributes(password: newPassword));
+    final encryption = EndToEndEncryptionService.instance;
+    await encryption.changeKeyVaultPassword(
+      currentPassword: currentPassword,
+      newPassword: newPassword,
+    );
+    try {
+      await client.auth.updateUser(UserAttributes(password: newPassword));
+    } catch (error) {
+      try {
+        await encryption.changeKeyVaultPassword(
+          currentPassword: newPassword,
+          newPassword: currentPassword,
+        );
+      } catch (rollbackError) {
+        throw StateError(
+          'Не удалось изменить пароль: $error. '
+          'Также не удалось восстановить резервную копию ключей: '
+          '$rollbackError',
+        );
+      }
+      rethrow;
+    }
   }
 
   // ========== РЕГИСТРАЦИЯ ==========
@@ -248,6 +310,15 @@ class AuthService {
         throw Exception('Сессия не была создана');
       }
 
+      try {
+        await EndToEndEncryptionService.instance.syncKeyVaultWithPassword(
+          password,
+        );
+      } catch (error) {
+        debugPrint(
+          'Не удалось создать резервную копию ключей после регистрации: $error',
+        );
+      }
       await AccountSessionService().registerCurrentEncryptionDevice();
       await _writeStorage('is_logged_in', 'true');
       return session;
@@ -410,6 +481,23 @@ class AuthService {
             };
           }
         }
+      }
+
+      final botRows = await Supabase.instance.client
+          .from('bots')
+          .select('id, name, tag, description, avatar_url, is_verified')
+          .eq('is_enabled', true)
+          .ilike('tag', '%${normalizedQuery.replaceAll('%', r'\%')}%')
+          .limit(50);
+      for (final bot in botRows) {
+        final id = bot['id'].toString();
+        users[id] = {
+          ...?users[id],
+          ...bot,
+          'id': id,
+          'is_bot': true,
+          'bot_verified': bot['is_verified'] == true,
+        };
       }
 
       return users.values.where((user) {

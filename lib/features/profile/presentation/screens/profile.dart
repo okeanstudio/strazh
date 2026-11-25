@@ -14,6 +14,7 @@ import 'package:strazh/core/utils/badges.dart';
 import 'package:strazh/features/profile/presentation/screens/edit_profile.dart';
 import 'package:strazh/features/profile/presentation/screens/manage_usernames_screen.dart';
 import 'package:strazh/features/profile/data/services/profile_nft_decoration_service.dart';
+import 'package:strazh/features/profile/data/services/profile_cache.dart';
 import 'package:strazh/features/profile/presentation/widgets/profile_nft_decorations.dart';
 import 'package:strazh/features/profile/presentation/widgets/profile_content_tabs.dart';
 import 'package:strazh/features/stories/data/services/stories_service.dart';
@@ -22,6 +23,7 @@ import 'package:strazh/features/chat/data/services/storage_upload_service.dart';
 import 'package:strazh/features/chat/data/services/username_chat_service.dart';
 import 'package:strazh/features/chat/presentation/screens/chat.dart';
 import 'package:strazh/shared/presentation/widgets/username_mention_text.dart';
+import 'package:strazh/features/profile/presentation/widgets/profile_music_card.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -50,6 +52,8 @@ class _ProfileScreenState extends State<ProfileScreen>
   String? _bio;
   String? _avatarUrl;
   String? _badge;
+  String? _profileMusicUrl;
+  String? _profileMusicName;
   bool _hasSubscription = false;
   bool _isLoading = true;
   bool _isUploadingAvatar = false;
@@ -134,7 +138,62 @@ class _ProfileScreenState extends State<ProfileScreen>
     return null;
   }
 
+  Widget _animatedProfileText(
+    String value, {
+    required TextStyle style,
+    TextOverflow? overflow,
+  }) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, animation) =>
+          FadeTransition(opacity: animation, child: child),
+      child: Text(
+        value,
+        key: ValueKey(value),
+        style: style,
+        overflow: overflow,
+      ),
+    );
+  }
+
   Future<void> _loadProfile() async {
+    final userId = _authService.currentUserId;
+    if (userId != null && _isLoading) {
+      try {
+        final cachedProfile = await ProfileCache.instance.read(userId);
+        if (cachedProfile != null && mounted) {
+          setState(() {
+            _userName = cachedProfile['name'] as String?;
+            _tag = cachedProfile['tag'] as String?;
+            _additionalUsernames =
+                (cachedProfile['additionalUsernames'] as List?)
+                    ?.whereType<String>()
+                    .toList() ??
+                [];
+            _phone = cachedProfile['phone'] as String?;
+            _birthDate = cachedProfile['birthDate'] as String?;
+            _inviteCode = cachedProfile['inviteCode'] as String?;
+            _invitedBy = cachedProfile['invitedBy'] as String?;
+            _invitedByTag = cachedProfile['invitedByTag'] as String?;
+            _role = cachedProfile['role'] as String?;
+            _bio = cachedProfile['bio'] as String?;
+            _avatarUrl = cachedProfile['avatarUrl'] as String?;
+            _badge = cachedProfile['badge'] as String?;
+            _profileMusicUrl = cachedProfile['profileMusicUrl'] as String?;
+            _profileMusicName = cachedProfile['profileMusicName'] as String?;
+            _hasSubscription = cachedProfile['hasSubscription'] == true;
+            _messagesCount =
+                (cachedProfile['messagesCount'] as num?)?.toInt() ?? 0;
+            _isLoading = false;
+          });
+        }
+      } catch (error) {
+        debugPrint('Не удалось прочитать кэш профиля: $error');
+      }
+    }
+
     String? tag = _authService.getUserTag();
 
     if (tag == null || tag.isEmpty) {
@@ -176,9 +235,56 @@ class _ProfileScreenState extends State<ProfileScreen>
 
       final metadata =
           userData['raw_user_meta_data'] as Map<String, dynamic>? ?? {};
+      final accountMetadata =
+          Supabase.instance.client.auth.currentUser?.userMetadata ??
+          const <String, dynamic>{};
       final userId = userData['id'] as String?;
 
       debugPrint('🔎 RAW metadata: $metadata');
+
+      final subActive = metadata['subscription_active'] == true;
+      final subExpiresRaw = metadata['subscription_expires_at'];
+      var subValid = false;
+      if (subActive && subExpiresRaw != null) {
+        if (subExpiresRaw.toString() == 'forever') {
+          subValid = true;
+        } else {
+          final expiresAt = DateTime.tryParse(subExpiresRaw.toString());
+          subValid = expiresAt != null && expiresAt.isAfter(DateTime.now());
+        }
+      }
+
+      final musicPath =
+          accountMetadata['profile_music_path'] as String? ??
+          metadata['profile_music_path'] as String? ??
+          StorageUploadService.objectPathFromStorageUrl(
+            'chat_files',
+            accountMetadata['profile_music_url'] ??
+                metadata['profile_music_url'],
+          );
+      final storedMusicUrl =
+          accountMetadata['profile_music_url'] as String? ??
+          metadata['profile_music_url'] as String?;
+
+      if (mounted) {
+        setState(() {
+          _userName = metadata['name'] as String?;
+          _tag = metadata['tag'] as String? ?? tag;
+          _phone = userData['phone'] as String? ?? metadata['phone'] as String?;
+          _birthDate = metadata['birth_date'] as String?;
+          _role = metadata['role'] as String? ?? 'user';
+          _bio = metadata['bio'] as String?;
+          _avatarUrl = metadata['avatar_url'] as String?;
+          _badge = metadata['badge'] as String?;
+          _profileMusicUrl = musicPath == null ? storedMusicUrl : null;
+          _profileMusicName =
+              (accountMetadata['profile_music_name'] as String? ??
+                      metadata['profile_music_name'] as String?)
+                  ?.trim();
+          _hasSubscription = subValid;
+          _isLoading = false;
+        });
+      }
 
       var additionalUsernames = <String>[];
       if (userId != null) {
@@ -253,16 +359,16 @@ class _ProfileScreenState extends State<ProfileScreen>
         }
       }
 
-      final subActive = metadata['subscription_active'] == true;
-      final subExpiresRaw = metadata['subscription_expires_at'];
-      bool subValid = false;
-
-      if (subActive && subExpiresRaw != null) {
-        if (subExpiresRaw.toString() == 'forever') {
-          subValid = true;
-        } else {
-          final d = DateTime.tryParse(subExpiresRaw.toString());
-          subValid = d != null && d.isAfter(DateTime.now());
+      String? profileMusicUrl = storedMusicUrl;
+      if (musicPath != null && musicPath.isNotEmpty) {
+        try {
+          profileMusicUrl = await StorageUploadService.createSignedUrl(
+            bucket: 'chat_files',
+            path: musicPath,
+            expiresIn: 3600,
+          );
+        } catch (error) {
+          debugPrint('Не удалось загрузить музыку профиля: $error');
         }
       }
 
@@ -280,12 +386,21 @@ class _ProfileScreenState extends State<ProfileScreen>
           _bio = metadata['bio'] as String?;
           _avatarUrl = metadata['avatar_url'] as String?;
           _badge = metadata['badge'] as String?;
+          _profileMusicUrl = profileMusicUrl;
+          _profileMusicName =
+              (accountMetadata['profile_music_name'] as String? ??
+                      metadata['profile_music_name'] as String?)
+                  ?.trim();
           _hasSubscription = subValid;
           _messagesCount = messagesCount;
           _isLoading = false;
         });
       }
 
+      await _writeProfileCache(
+        userId ?? _authService.currentUserId,
+        profileMusicUrl: musicPath == null ? storedMusicUrl : null,
+      );
       await _loadUserGifts();
       await _loadUserStories(userId ?? _authService.currentUserId);
     } catch (e, stack) {
@@ -294,6 +409,35 @@ class _ProfileScreenState extends State<ProfileScreen>
       if (mounted) {
         setState(() => _isLoading = false);
       }
+    }
+  }
+
+  Future<void> _writeProfileCache(
+    String? userId, {
+    String? profileMusicUrl,
+  }) async {
+    if (userId == null) return;
+    try {
+      await ProfileCache.instance.write(userId, {
+        'name': _userName,
+        'tag': _tag,
+        'additionalUsernames': _additionalUsernames,
+        'phone': _phone,
+        'birthDate': _birthDate,
+        'inviteCode': _inviteCode,
+        'invitedBy': _invitedBy,
+        'invitedByTag': _invitedByTag,
+        'role': _role,
+        'bio': _bio,
+        'avatarUrl': _avatarUrl,
+        'badge': _badge,
+        'profileMusicUrl': profileMusicUrl,
+        'profileMusicName': _profileMusicName,
+        'hasSubscription': _hasSubscription,
+        'messagesCount': _messagesCount,
+      });
+    } catch (error) {
+      debugPrint('Не удалось сохранить кэш профиля: $error');
     }
   }
 
@@ -500,6 +644,7 @@ class _ProfileScreenState extends State<ProfileScreen>
           _avatarUrl = publicUrl;
           _isUploadingAvatar = false;
         });
+        await _writeProfileCache(userId);
         Toast.success(context, 'Аватарка обновлена');
       }
     } catch (e) {
@@ -561,6 +706,7 @@ class _ProfileScreenState extends State<ProfileScreen>
           _avatarUrl = null;
           _isUploadingAvatar = false;
         });
+        await _writeProfileCache(session.user.id);
         Toast.success(context, 'Аватарка удалена');
       }
     } catch (e) {
@@ -684,6 +830,7 @@ class _ProfileScreenState extends State<ProfileScreen>
   @override
   void initState() {
     super.initState();
+    StoriesService.storiesRevision.addListener(_onStoriesChanged);
     _loadProfile();
 
     _shakeController = AnimationController(
@@ -702,9 +849,14 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   @override
   void dispose() {
+    StoriesService.storiesRevision.removeListener(_onStoriesChanged);
     _shakeController.dispose();
     _loadingAnimationController.dispose();
     super.dispose();
+  }
+
+  void _onStoriesChanged() {
+    _loadUserStories(_authService.currentUserId);
   }
 
   Future<void> _openEditProfile() async {
@@ -884,776 +1036,860 @@ class _ProfileScreenState extends State<ProfileScreen>
                 child: CustomPaint(painter: _ProfileBackdropPainter()),
               ),
             ),
-            if (_isLoading)
-              const Center(
-                child: CircularProgressIndicator(color: Color(0xFF9B5CFF)),
-              )
-            else
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  final contentMaxWidth = constraints.maxWidth >= 900
-                      ? 920.0
-                      : constraints.maxWidth;
-                  return SingleChildScrollView(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: constraints.maxWidth >= 900 ? 32 : 20,
-                      vertical: 18,
-                    ),
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: contentMaxWidth),
-                        child: Column(
-                          children: [
-                            if (isDesktop)
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: IconButton(
-                                  tooltip: 'Редактировать профиль',
-                                  onPressed: _openEditProfile,
-                                  icon: const Icon(
-                                    Icons.settings_outlined,
-                                    color: Colors.white,
-                                  ),
-                                  style: IconButton.styleFrom(
-                                    backgroundColor: const Color(
-                                      0xFF171329,
-                                    ).withValues(alpha: 0.9),
-                                    side: BorderSide(
-                                      color: const Color(
-                                        0xFF9B5CFF,
-                                      ).withValues(alpha: 0.3),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            Center(
-                              child: GestureDetector(
-                                onTap: () {
-                                  final url = _avatarUrl;
-                                  if (url != null && url.isNotEmpty) {
-                                    showAvatarPreview(
-                                      context,
-                                      image: NetworkImage(url),
-                                    );
-                                  } else {
-                                    _showAvatarPicker();
-                                  }
-                                },
-                                child: ProfileNftAvatarOrbit(
-                                  size: avatarOrbitSize,
-                                  gifts: [
-                                    for (var slot = 0; slot < 4; slot++)
-                                      if (_decorationGift('avatar', slot)
-                                          case final gift?)
-                                        gift,
-                                  ],
-                                  child: Stack(
-                                    alignment: Alignment.bottomRight,
-                                    children: [
-                                      Container(
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          gradient: const LinearGradient(
-                                            colors: [
-                                              Color(0xFFD8B5FF),
-                                              Color(0xFF8A35FF),
-                                              Color(0xFF4A14B8),
-                                            ],
-                                            begin: Alignment.topLeft,
-                                            end: Alignment.bottomRight,
-                                          ),
-                                          boxShadow: [
-                                            BoxShadow(
-                                              color: const Color(
-                                                0xFF9B5CFF,
-                                              ).withValues(alpha: 0.5),
-                                              blurRadius: 34,
-                                              spreadRadius: 2,
-                                            ),
-                                          ],
-                                        ),
-                                        padding: const EdgeInsets.all(5),
-                                        child: CircleAvatar(
-                                          radius: 71,
-                                          backgroundColor: const Color(
-                                            0xFF100B1D,
-                                          ),
-                                          backgroundImage:
-                                              _avatarUrl != null &&
-                                                  _avatarUrl!.isNotEmpty
-                                              ? NetworkImage(_avatarUrl!)
-                                              : null,
-                                          child:
-                                              _avatarUrl == null ||
-                                                  _avatarUrl!.isEmpty
-                                              ? Text(
-                                                  _userName != null &&
-                                                          _userName!.isNotEmpty
-                                                      ? _userName![0]
-                                                            .toUpperCase()
-                                                      : '?',
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 52,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                )
-                                              : null,
-                                        ),
-                                      ),
-                                      Container(
-                                        padding: const EdgeInsets.all(3),
-                                        decoration: const BoxDecoration(
-                                          color: Color(0xFF090515),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: GestureDetector(
-                                          onTap: _showAvatarPicker,
-                                          child: Container(
-                                            padding: const EdgeInsets.all(10),
-                                            decoration: const BoxDecoration(
-                                              color: Color(0xFF7442F5),
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: const Icon(
-                                              Icons.edit,
-                                              color: Colors.white,
-                                              size: 20,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      if (_isUploadingAvatar)
-                                        Positioned.fill(
-                                          child: Container(
-                                            decoration: const BoxDecoration(
-                                              color: Colors.black54,
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: const Center(
-                                              child: SizedBox(
-                                                width: 30,
-                                                height: 30,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                      color: Colors.white,
-                                                      strokeWidth: 2,
-                                                    ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Flexible(
-                                  child: ProfileNftNameDecoration(
-                                    gift: _decorationGift('name', 0),
-                                    child: Text(
-                                      _userName ?? 'Имя',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 30,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                _buildRoleIcon(_role),
-                              ],
-                            ),
-
-                            TextButton.icon(
-                              onPressed: _openDecorationPicker,
-                              icon: const Icon(Icons.auto_awesome, size: 17),
-                              label: const Text('Украшения профиля'),
-                              style: TextButton.styleFrom(
-                                foregroundColor: const Color(0xFFB974FF),
-                                textStyle: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-
-                            const SizedBox(height: 4),
-
-                            GestureDetector(
-                              onTap: () {
-                                final usernames = [
-                                  if (_tag?.isNotEmpty == true) _tag!,
-                                  ..._additionalUsernames,
-                                ];
-                                final copiedUsernames = usernames.isEmpty
-                                    ? ''
-                                    : formatUsernameList(
-                                        usernames.first,
-                                        usernames.skip(1),
-                                      );
-                                Clipboard.setData(
-                                  ClipboardData(text: copiedUsernames),
-                                );
-                                if (mounted) {
-                                  Toast.success(
-                                    context,
-                                    'Юзернеймы скопированы',
-                                  );
-                                }
-                              },
-                              child: Container(
-                                width: double.infinity,
-                                constraints: const BoxConstraints(
-                                  maxWidth: 420,
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 12,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF171329),
-                                  borderRadius: BorderRadius.circular(14),
-                                  border: Border.all(
-                                    color: const Color(
-                                      0xFF9B5CFF,
-                                    ).withValues(alpha: 0.24),
-                                  ),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        const Expanded(
-                                          child: Text(
-                                            'ЮЗЕРНЕЙМ',
-                                            style: TextStyle(
-                                              color: Color(0xFF9B8CB8),
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.w600,
-                                              letterSpacing: 1.1,
-                                            ),
-                                          ),
-                                        ),
-                                        TextButton.icon(
-                                          onPressed: _openUsernameManager,
-                                          icon: const Icon(
-                                            Icons.add_circle_outline,
-                                            size: 16,
-                                          ),
-                                          label: const Text('Управлять'),
-                                          style: TextButton.styleFrom(
-                                            foregroundColor: const Color(
-                                              0xFFBDA4FF,
-                                            ),
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 8,
-                                            ),
-                                            textStyle: const TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 6),
-                                    UsernameMentionText(
-                                      text: formatUsernameList(
-                                        _tag ?? 'username',
-                                        _additionalUsernames,
-                                      ),
-                                      style: const TextStyle(
-                                        color: Color(0xFFD1C2EF),
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w500,
-                                        height: 1.5,
-                                      ),
-                                      linkColor: const Color(0xFFD1C2EF),
-                                      onUsernameTap: _openUsernameChat,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            if (_bio != null && _bio!.isNotEmpty)
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: const Color(
-                                    0xFF171329,
-                                  ).withValues(alpha: 0.9),
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(
-                                    color: const Color(
-                                      0xFF9B5CFF,
-                                    ).withValues(alpha: 0.2),
-                                    width: 1,
-                                  ),
-                                ),
-                                child: UsernameMentionText(
-                                  text: _bio!,
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 15,
-                                    height: 1.5,
-                                  ),
-                                  linkColor: const Color(0xFF91B9FF),
-                                  onUsernameTap: _openUsernameChat,
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-
-                            if (_bio != null && _bio!.isNotEmpty)
-                              const SizedBox(height: 16),
-
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                color: const Color(
-                                  0xFF171329,
-                                ).withValues(alpha: 0.94),
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(
-                                  color: const Color(
-                                    0xFF9B5CFF,
-                                  ).withValues(alpha: 0.24),
-                                  width: 1,
-                                ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              transitionBuilder: (child, animation) =>
+                  FadeTransition(opacity: animation, child: child),
+              child: _isLoading
+                  ? const Center(
+                      key: ValueKey('profile-loading'),
+                      child: CircularProgressIndicator(
+                        color: Color(0xFF9B5CFF),
+                      ),
+                    )
+                  : LayoutBuilder(
+                      key: const ValueKey('profile-content'),
+                      builder: (context, constraints) {
+                        final contentMaxWidth = constraints.maxWidth >= 900
+                            ? 920.0
+                            : constraints.maxWidth;
+                        return SingleChildScrollView(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: constraints.maxWidth >= 900 ? 32 : 20,
+                            vertical: 18,
+                          ),
+                          child: Center(
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth: contentMaxWidth,
                               ),
                               child: Column(
                                 children: [
-                                  Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(8),
-                                        decoration: BoxDecoration(
-                                          color: Colors.pink.withValues(
-                                            alpha: 0.2,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            10,
-                                          ),
+                                  if (isDesktop)
+                                    Align(
+                                      alignment: Alignment.centerRight,
+                                      child: IconButton(
+                                        tooltip: 'Редактировать профиль',
+                                        onPressed: _openEditProfile,
+                                        icon: const Icon(
+                                          Icons.settings_outlined,
+                                          color: Colors.white,
                                         ),
-                                        child: const Icon(
-                                          Icons.cake,
-                                          color: Colors.pink,
-                                          size: 20,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            const Text(
-                                              'День рождения',
-                                              style: TextStyle(
-                                                color: const Color(0xFFAAA0BF),
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                            Text(
-                                              _formatBirthDate(_birthDate),
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(8),
-                                        decoration: BoxDecoration(
-                                          color: Colors.green.withValues(
-                                            alpha: 0.2,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            10,
-                                          ),
-                                        ),
-                                        child: const Icon(
-                                          Icons.phone,
-                                          color: Colors.green,
-                                          size: 20,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            const Text(
-                                              'Номер телефона',
-                                              style: TextStyle(
-                                                color: const Color(0xFFAAA0BF),
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                            Text(
-                                              _phone != null &&
-                                                      _phone!.isNotEmpty
-                                                  ? _formatPhoneForDisplay(
-                                                      _phone!,
-                                                    )
-                                                  : 'Не указан',
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(8),
-                                        decoration: BoxDecoration(
-                                          color: Colors.blue.withValues(
-                                            alpha: 0.2,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            10,
-                                          ),
-                                        ),
-                                        child: const Icon(
-                                          Icons.link,
-                                          color: Colors.blue,
-                                          size: 20,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            const Text(
-                                              'Код приглашения',
-                                              style: TextStyle(
-                                                color: const Color(0xFFAAA0BF),
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                            Row(
-                                              children: [
-                                                Text(
-                                                  _inviteCode ?? 'Не указан',
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.w500,
-                                                  ),
-                                                ),
-                                                if (_inviteCode != null)
-                                                  IconButton(
-                                                    onPressed: () {
-                                                      Clipboard.setData(
-                                                        ClipboardData(
-                                                          text: _inviteCode!,
-                                                        ),
-                                                      );
-                                                      if (mounted) {
-                                                        Toast.success(
-                                                          context,
-                                                          'Код приглашения скопирован',
-                                                        );
-                                                      }
-                                                    },
-                                                    icon: const Icon(
-                                                      Icons.copy,
-                                                      color: const Color(
-                                                        0xFFAAA0BF,
-                                                      ),
-                                                      size: 18,
-                                                    ),
-                                                    padding: EdgeInsets.zero,
-                                                    constraints:
-                                                        const BoxConstraints(),
-                                                  ),
-                                              ],
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(8),
-                                        decoration: BoxDecoration(
-                                          color: Colors.purple.withValues(
-                                            alpha: 0.2,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            10,
-                                          ),
-                                        ),
-                                        child: const Icon(
-                                          Icons.person_add,
-                                          color: Colors.purple,
-                                          size: 20,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            const Text(
-                                              'Пригласил',
-                                              style: TextStyle(
-                                                color: Colors.grey,
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                            Text(
-                                              _invitedBy != null &&
-                                                      _invitedBy!.isNotEmpty
-                                                  ? '$_invitedBy (@${_invitedByTag ?? ''})'
-                                                  : 'Сам зарегистрировался',
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            const SizedBox(height: 16),
-
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 16,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: const Color(
-                                        0xFF171329,
-                                      ).withValues(alpha: 0.94),
-                                      borderRadius: BorderRadius.circular(16),
-                                      border: Border.all(
-                                        color: const Color(
-                                          0xFF9B5CFF,
-                                        ).withValues(alpha: 0.24),
-                                        width: 1,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.all(10),
-                                          decoration: BoxDecoration(
-                                            color: const Color(
-                                              0xFFFFD700,
-                                            ).withValues(alpha: 0.15),
-                                            shape: BoxShape.circle,
-                                          ),
-                                          child: const Icon(
-                                            Icons.card_giftcard,
-                                            color: Color(0xFFFFD700),
-                                            size: 24,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 6),
-                                        Text(
-                                          '$_giftsCount',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 20,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                        const Text(
-                                          'Подарков',
-                                          style: TextStyle(
-                                            color: Colors.grey,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 16,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: const Color(
-                                        0xFF171329,
-                                      ).withValues(alpha: 0.94),
-                                      borderRadius: BorderRadius.circular(16),
-                                      border: Border.all(
-                                        color: const Color(
-                                          0xFF9B5CFF,
-                                        ).withValues(alpha: 0.24),
-                                        width: 1,
-                                      ),
-                                    ),
-                                    child: Column(
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.all(10),
-                                          decoration: BoxDecoration(
+                                        style: IconButton.styleFrom(
+                                          backgroundColor: const Color(
+                                            0xFF171329,
+                                          ).withValues(alpha: 0.9),
+                                          side: BorderSide(
                                             color: const Color(
                                               0xFF9B5CFF,
-                                            ).withValues(alpha: 0.15),
-                                            shape: BoxShape.circle,
-                                          ),
-                                          child: const Icon(
-                                            Icons.message,
-                                            color: const Color(0xFFB974FF),
-                                            size: 24,
+                                            ).withValues(alpha: 0.3),
                                           ),
                                         ),
-                                        const SizedBox(height: 6),
-                                        Text(
-                                          '$_messagesCount',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 20,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                        const Text(
-                                          'Сообщений',
-                                          style: TextStyle(
-                                            color: const Color(0xFFAAA0BF),
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 16),
-                            ProfileContentTabs(
-                              stories: _userStories,
-                              isLoadingStories: _isLoadingStories,
-                              storiesError: _storiesError,
-                              onRetryStories: () =>
-                                  _loadUserStories(_authService.currentUserId),
-                              gifts: _userGifts,
-                              isLoadingGifts: _isLoadingGifts,
-                              canManageGifts: true,
-                              onGiftUpgraded: _updateGiftAfterUpgrade,
-                              onGiftPinned: _updateGiftPin,
-                              ownerId: _authService.currentUserId ?? '',
-                              ownerName: _userName ?? '',
-                              ownerTag: _tag ?? '',
-                              ownerAvatarUrl: _avatarUrl ?? '',
-                            ),
-
-                            const SizedBox(height: 24),
-
-                            SizedBox(
-                              width: double.infinity,
-                              child: TextButton(
-                                style: TextButton.styleFrom(
-                                  backgroundColor: Colors.red.withValues(
-                                    alpha: 0.1,
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 16,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    side: BorderSide(
-                                      color: Colors.red.withValues(alpha: 0.2),
-                                      width: 1,
-                                    ),
-                                  ),
-                                ),
-                                onPressed: () async {
-                                  await _authService.logout();
-                                  if (mounted) {
-                                    Navigator.pushReplacement(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) =>
-                                            const AuthScreen(),
                                       ),
-                                    );
-                                  }
-                                },
-                                child: const Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(
-                                      Icons.logout,
-                                      color: Colors.red,
-                                      size: 22,
                                     ),
-                                    SizedBox(width: 10),
-                                    Text(
-                                      'Выйти из аккаунта',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        color: Colors.red,
+                                  Center(
+                                    child: GestureDetector(
+                                      onTap: () {
+                                        final url = _avatarUrl;
+                                        if (url != null && url.isNotEmpty) {
+                                          showAvatarPreview(
+                                            context,
+                                            image: NetworkImage(url),
+                                          );
+                                        } else {
+                                          _showAvatarPicker();
+                                        }
+                                      },
+                                      child: ProfileNftAvatarOrbit(
+                                        size: avatarOrbitSize,
+                                        gifts: [
+                                          for (var slot = 0; slot < 4; slot++)
+                                            if (_decorationGift('avatar', slot)
+                                                case final gift?)
+                                              gift,
+                                        ],
+                                        child: Stack(
+                                          alignment: Alignment.bottomRight,
+                                          children: [
+                                            Container(
+                                              decoration: BoxDecoration(
+                                                shape: BoxShape.circle,
+                                                gradient: const LinearGradient(
+                                                  colors: [
+                                                    Color(0xFFD8B5FF),
+                                                    Color(0xFF8A35FF),
+                                                    Color(0xFF4A14B8),
+                                                  ],
+                                                  begin: Alignment.topLeft,
+                                                  end: Alignment.bottomRight,
+                                                ),
+                                                boxShadow: [
+                                                  BoxShadow(
+                                                    color: const Color(
+                                                      0xFF9B5CFF,
+                                                    ).withValues(alpha: 0.5),
+                                                    blurRadius: 34,
+                                                    spreadRadius: 2,
+                                                  ),
+                                                ],
+                                              ),
+                                              padding: const EdgeInsets.all(5),
+                                              child: AnimatedSwitcher(
+                                                duration: const Duration(
+                                                  milliseconds: 220,
+                                                ),
+                                                child: CircleAvatar(
+                                                  key: ValueKey(_avatarUrl),
+                                                  radius: 71,
+                                                  backgroundColor: const Color(
+                                                    0xFF100B1D,
+                                                  ),
+                                                  backgroundImage:
+                                                      _avatarUrl != null &&
+                                                          _avatarUrl!.isNotEmpty
+                                                      ? NetworkImage(
+                                                          _avatarUrl!,
+                                                        )
+                                                      : null,
+                                                  child:
+                                                      _avatarUrl == null ||
+                                                          _avatarUrl!.isEmpty
+                                                      ? Text(
+                                                          _userName != null &&
+                                                                  _userName!
+                                                                      .isNotEmpty
+                                                              ? _userName![0]
+                                                                    .toUpperCase()
+                                                              : '?',
+                                                          style:
+                                                              const TextStyle(
+                                                                color: Colors
+                                                                    .white,
+                                                                fontSize: 52,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .bold,
+                                                              ),
+                                                        )
+                                                      : null,
+                                                ),
+                                              ),
+                                            ),
+                                            Container(
+                                              padding: const EdgeInsets.all(3),
+                                              decoration: const BoxDecoration(
+                                                color: Color(0xFF090515),
+                                                shape: BoxShape.circle,
+                                              ),
+                                              child: GestureDetector(
+                                                onTap: _showAvatarPicker,
+                                                child: Container(
+                                                  padding: const EdgeInsets.all(
+                                                    10,
+                                                  ),
+                                                  decoration:
+                                                      const BoxDecoration(
+                                                        color: Color(
+                                                          0xFF7442F5,
+                                                        ),
+                                                        shape: BoxShape.circle,
+                                                      ),
+                                                  child: const Icon(
+                                                    Icons.edit,
+                                                    color: Colors.white,
+                                                    size: 20,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                            if (_isUploadingAvatar)
+                                              Positioned.fill(
+                                                child: Container(
+                                                  decoration:
+                                                      const BoxDecoration(
+                                                        color: Colors.black54,
+                                                        shape: BoxShape.circle,
+                                                      ),
+                                                  child: const Center(
+                                                    child: SizedBox(
+                                                      width: 30,
+                                                      height: 30,
+                                                      child:
+                                                          CircularProgressIndicator(
+                                                            color: Colors.white,
+                                                            strokeWidth: 2,
+                                                          ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+
+                                  const SizedBox(height: 16),
+
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Flexible(
+                                        child: ProfileNftNameDecoration(
+                                          gift: _decorationGift('name', 0),
+                                          child: _animatedProfileText(
+                                            _userName ?? 'Имя',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 30,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      _buildRoleIcon(_role),
+                                    ],
+                                  ),
+
+                                  TextButton.icon(
+                                    onPressed: _openDecorationPicker,
+                                    icon: const Icon(
+                                      Icons.auto_awesome,
+                                      size: 17,
+                                    ),
+                                    label: const Text('Украшения профиля'),
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: const Color(0xFFB974FF),
+                                      textStyle: const TextStyle(
+                                        fontSize: 13,
                                         fontWeight: FontWeight.w600,
                                       ),
                                     ),
+                                  ),
+
+                                  const SizedBox(height: 4),
+
+                                  if (_profileMusicUrl?.isNotEmpty == true) ...[
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                      ),
+                                      child: ProfileMusicCard(
+                                        url: _profileMusicUrl!,
+                                        title:
+                                            _profileMusicName?.isNotEmpty ==
+                                                true
+                                            ? _profileMusicName!
+                                            : 'Музыка профиля',
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
                                   ],
-                                ),
+
+                                  GestureDetector(
+                                    onTap: () {
+                                      final usernames = [
+                                        if (_tag?.isNotEmpty == true) _tag!,
+                                        ..._additionalUsernames,
+                                      ];
+                                      final copiedUsernames = usernames.isEmpty
+                                          ? ''
+                                          : formatUsernameList(
+                                              usernames.first,
+                                              usernames.skip(1),
+                                            );
+                                      Clipboard.setData(
+                                        ClipboardData(text: copiedUsernames),
+                                      );
+                                      if (mounted) {
+                                        Toast.success(
+                                          context,
+                                          'Юзернеймы скопированы',
+                                        );
+                                      }
+                                    },
+                                    child: Container(
+                                      width: double.infinity,
+                                      constraints: const BoxConstraints(
+                                        maxWidth: 420,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16,
+                                        vertical: 12,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF171329),
+                                        borderRadius: BorderRadius.circular(14),
+                                        border: Border.all(
+                                          color: const Color(
+                                            0xFF9B5CFF,
+                                          ).withValues(alpha: 0.24),
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              const Expanded(
+                                                child: Text(
+                                                  'ЮЗЕРНЕЙМ',
+                                                  style: TextStyle(
+                                                    color: Color(0xFF9B8CB8),
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w600,
+                                                    letterSpacing: 1.1,
+                                                  ),
+                                                ),
+                                              ),
+                                              TextButton.icon(
+                                                onPressed: _openUsernameManager,
+                                                icon: const Icon(
+                                                  Icons.add_circle_outline,
+                                                  size: 16,
+                                                ),
+                                                label: const Text('Управлять'),
+                                                style: TextButton.styleFrom(
+                                                  foregroundColor: const Color(
+                                                    0xFFBDA4FF,
+                                                  ),
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 8,
+                                                      ),
+                                                  textStyle: const TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 6),
+                                          UsernameMentionText(
+                                            text: formatUsernameList(
+                                              _tag ?? 'username',
+                                              _additionalUsernames,
+                                            ),
+                                            style: const TextStyle(
+                                              color: Color(0xFFD1C2EF),
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.w500,
+                                              height: 1.5,
+                                            ),
+                                            linkColor: const Color(0xFFD1C2EF),
+                                            onUsernameTap: _openUsernameChat,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+
+                                  const SizedBox(height: 16),
+
+                                  if (_bio != null && _bio!.isNotEmpty)
+                                    Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.all(16),
+                                      decoration: BoxDecoration(
+                                        color: const Color(
+                                          0xFF171329,
+                                        ).withValues(alpha: 0.9),
+                                        borderRadius: BorderRadius.circular(16),
+                                        border: Border.all(
+                                          color: const Color(
+                                            0xFF9B5CFF,
+                                          ).withValues(alpha: 0.2),
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: UsernameMentionText(
+                                        text: _bio!,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 15,
+                                          height: 1.5,
+                                        ),
+                                        linkColor: const Color(0xFF91B9FF),
+                                        onUsernameTap: _openUsernameChat,
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ),
+
+                                  if (_bio != null && _bio!.isNotEmpty)
+                                    const SizedBox(height: 16),
+
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      color: const Color(
+                                        0xFF171329,
+                                      ).withValues(alpha: 0.94),
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(
+                                        color: const Color(
+                                          0xFF9B5CFF,
+                                        ).withValues(alpha: 0.24),
+                                        width: 1,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(8),
+                                              decoration: BoxDecoration(
+                                                color: Colors.pink.withValues(
+                                                  alpha: 0.2,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
+                                              ),
+                                              child: const Icon(
+                                                Icons.cake,
+                                                color: Colors.pink,
+                                                size: 20,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  const Text(
+                                                    'День рождения',
+                                                    style: TextStyle(
+                                                      color: const Color(
+                                                        0xFFAAA0BF,
+                                                      ),
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    _formatBirthDate(
+                                                      _birthDate,
+                                                    ),
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.w500,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(8),
+                                              decoration: BoxDecoration(
+                                                color: Colors.green.withValues(
+                                                  alpha: 0.2,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
+                                              ),
+                                              child: const Icon(
+                                                Icons.phone,
+                                                color: Colors.green,
+                                                size: 20,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  const Text(
+                                                    'Номер телефона',
+                                                    style: TextStyle(
+                                                      color: const Color(
+                                                        0xFFAAA0BF,
+                                                      ),
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    _phone != null &&
+                                                            _phone!.isNotEmpty
+                                                        ? _formatPhoneForDisplay(
+                                                            _phone!,
+                                                          )
+                                                        : 'Не указан',
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.w500,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(8),
+                                              decoration: BoxDecoration(
+                                                color: Colors.blue.withValues(
+                                                  alpha: 0.2,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
+                                              ),
+                                              child: const Icon(
+                                                Icons.link,
+                                                color: Colors.blue,
+                                                size: 20,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  const Text(
+                                                    'Код приглашения',
+                                                    style: TextStyle(
+                                                      color: const Color(
+                                                        0xFFAAA0BF,
+                                                      ),
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                  Row(
+                                                    children: [
+                                                      Text(
+                                                        _inviteCode ??
+                                                            'Не указан',
+                                                        style: const TextStyle(
+                                                          color: Colors.white,
+                                                          fontSize: 16,
+                                                          fontWeight:
+                                                              FontWeight.w500,
+                                                        ),
+                                                      ),
+                                                      if (_inviteCode != null)
+                                                        IconButton(
+                                                          onPressed: () {
+                                                            Clipboard.setData(
+                                                              ClipboardData(
+                                                                text:
+                                                                    _inviteCode!,
+                                                              ),
+                                                            );
+                                                            if (mounted) {
+                                                              Toast.success(
+                                                                context,
+                                                                'Код приглашения скопирован',
+                                                              );
+                                                            }
+                                                          },
+                                                          icon: const Icon(
+                                                            Icons.copy,
+                                                            color: const Color(
+                                                              0xFFAAA0BF,
+                                                            ),
+                                                            size: 18,
+                                                          ),
+                                                          padding:
+                                                              EdgeInsets.zero,
+                                                          constraints:
+                                                              const BoxConstraints(),
+                                                        ),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(8),
+                                              decoration: BoxDecoration(
+                                                color: Colors.purple.withValues(
+                                                  alpha: 0.2,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
+                                              ),
+                                              child: const Icon(
+                                                Icons.person_add,
+                                                color: Colors.purple,
+                                                size: 20,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  const Text(
+                                                    'Пригласил',
+                                                    style: TextStyle(
+                                                      color: Colors.grey,
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    _invitedBy != null &&
+                                                            _invitedBy!
+                                                                .isNotEmpty
+                                                        ? '$_invitedBy (@${_invitedByTag ?? ''})'
+                                                        : 'Сам зарегистрировался',
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.w500,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+
+                                  const SizedBox(height: 16),
+
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 16,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: const Color(
+                                              0xFF171329,
+                                            ).withValues(alpha: 0.94),
+                                            borderRadius: BorderRadius.circular(
+                                              16,
+                                            ),
+                                            border: Border.all(
+                                              color: const Color(
+                                                0xFF9B5CFF,
+                                              ).withValues(alpha: 0.24),
+                                              width: 1,
+                                            ),
+                                          ),
+                                          child: Column(
+                                            children: [
+                                              Container(
+                                                padding: const EdgeInsets.all(
+                                                  10,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: const Color(
+                                                    0xFFFFD700,
+                                                  ).withValues(alpha: 0.15),
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: const Icon(
+                                                  Icons.card_giftcard,
+                                                  color: Color(0xFFFFD700),
+                                                  size: 24,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 6),
+                                              Text(
+                                                '$_giftsCount',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 20,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              ),
+                                              const Text(
+                                                'Подарков',
+                                                style: TextStyle(
+                                                  color: Colors.grey,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 16,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: const Color(
+                                              0xFF171329,
+                                            ).withValues(alpha: 0.94),
+                                            borderRadius: BorderRadius.circular(
+                                              16,
+                                            ),
+                                            border: Border.all(
+                                              color: const Color(
+                                                0xFF9B5CFF,
+                                              ).withValues(alpha: 0.24),
+                                              width: 1,
+                                            ),
+                                          ),
+                                          child: Column(
+                                            children: [
+                                              Container(
+                                                padding: const EdgeInsets.all(
+                                                  10,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: const Color(
+                                                    0xFF9B5CFF,
+                                                  ).withValues(alpha: 0.15),
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: const Icon(
+                                                  Icons.message,
+                                                  color: const Color(
+                                                    0xFFB974FF,
+                                                  ),
+                                                  size: 24,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 6),
+                                              Text(
+                                                '$_messagesCount',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 20,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              ),
+                                              const Text(
+                                                'Сообщений',
+                                                style: TextStyle(
+                                                  color: const Color(
+                                                    0xFFAAA0BF,
+                                                  ),
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+
+                                  const SizedBox(height: 16),
+                                  ProfileContentTabs(
+                                    stories: _userStories,
+                                    isLoadingStories: _isLoadingStories,
+                                    storiesError: _storiesError,
+                                    onRetryStories: () => _loadUserStories(
+                                      _authService.currentUserId,
+                                    ),
+                                    gifts: _userGifts,
+                                    isLoadingGifts: _isLoadingGifts,
+                                    canManageGifts: true,
+                                    onGiftUpgraded: _updateGiftAfterUpgrade,
+                                    onGiftPinned: _updateGiftPin,
+                                    ownerId: _authService.currentUserId ?? '',
+                                    ownerName: _userName ?? '',
+                                    ownerTag: _tag ?? '',
+                                    ownerAvatarUrl: _avatarUrl ?? '',
+                                    canDeleteStories: true,
+                                  ),
+
+                                  const SizedBox(height: 24),
+
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: TextButton(
+                                      style: TextButton.styleFrom(
+                                        backgroundColor: Colors.red.withValues(
+                                          alpha: 0.1,
+                                        ),
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 16,
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            16,
+                                          ),
+                                          side: BorderSide(
+                                            color: Colors.red.withValues(
+                                              alpha: 0.2,
+                                            ),
+                                            width: 1,
+                                          ),
+                                        ),
+                                      ),
+                                      onPressed: () async {
+                                        await _authService.logout();
+                                        if (mounted) {
+                                          Navigator.pushReplacement(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (context) =>
+                                                  const AuthScreen(),
+                                            ),
+                                          );
+                                        }
+                                      },
+                                      child: const Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          Icon(
+                                            Icons.logout,
+                                            color: Colors.red,
+                                            size: 22,
+                                          ),
+                                          SizedBox(width: 10),
+                                          Text(
+                                            'Выйти из аккаунта',
+                                            style: TextStyle(
+                                              fontSize: 16,
+                                              color: Colors.red,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+
+                                  const SizedBox(height: 20),
+                                ],
                               ),
                             ),
-
-                            const SizedBox(height: 20),
-                          ],
-                        ),
-                      ),
+                          ),
+                        );
+                      },
                     ),
-                  );
-                },
-              ),
+            ),
           ],
         ),
       ),

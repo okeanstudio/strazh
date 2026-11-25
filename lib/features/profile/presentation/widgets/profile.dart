@@ -17,12 +17,37 @@ import 'package:strazh/features/profile/presentation/widgets/profile_nft_decorat
 import 'package:strazh/features/profile/presentation/widgets/profile_content_tabs.dart';
 import 'package:strazh/features/stories/data/services/stories_service.dart';
 import 'package:strazh/shared/domain/models/story.dart';
+import 'package:strazh/features/chat/data/services/storage_upload_service.dart';
+import 'package:strazh/features/profile/presentation/widgets/profile_music_card.dart';
+
+Future<void> showUserProfile(
+  BuildContext context, {
+  required app.User user,
+  VoidCallback? onAudioCall,
+  VoidCallback? onVideoCall,
+  ValueChanged<String>? onUsernameTap,
+}) {
+  final profile = ProfileDialog(
+    user: user,
+    onAudioCall: onAudioCall,
+    onVideoCall: onVideoCall,
+    onUsernameTap: onUsernameTap,
+    fullScreen: MediaQuery.sizeOf(context).width < 600,
+  );
+  if (MediaQuery.sizeOf(context).width < 600) {
+    return Navigator.of(
+      context,
+    ).push<void>(MaterialPageRoute<void>(builder: (_) => profile));
+  }
+  return showDialog<void>(context: context, builder: (_) => profile);
+}
 
 class ProfileDialog extends StatefulWidget {
   final app.User user;
   final VoidCallback? onAudioCall;
   final VoidCallback? onVideoCall;
   final ValueChanged<String>? onUsernameTap;
+  final bool fullScreen;
 
   const ProfileDialog({
     super.key,
@@ -30,6 +55,7 @@ class ProfileDialog extends StatefulWidget {
     this.onAudioCall,
     this.onVideoCall,
     this.onUsernameTap,
+    this.fullScreen = false,
   });
 
   @override
@@ -44,6 +70,8 @@ class _ProfileDialogState extends State<ProfileDialog>
   String? _role;
   String? _badge;
   bool _isLoading = true;
+  bool _isBot = false;
+  bool _botVerified = false;
 
   // Полные данные пользователя
   String _name = '';
@@ -56,6 +84,8 @@ class _ProfileDialogState extends State<ProfileDialog>
   String? _birthDate;
   String? _inviteCode;
   bool _hasSubscription = false;
+  String? _profileMusicUrl;
+  String? _profileMusicName;
 
   // Данные о пригласившем
   // ignore: unused_field
@@ -83,6 +113,7 @@ class _ProfileDialogState extends State<ProfileDialog>
   @override
   void initState() {
     super.initState();
+    StoriesService.storiesRevision.addListener(_onStoriesChanged);
     _rainbowController = AnimationController(
       duration: const Duration(seconds: 2),
       vsync: this,
@@ -95,16 +126,23 @@ class _ProfileDialogState extends State<ProfileDialog>
     _birthDate = widget.user.birthDate?.toIso8601String();
     _badge = widget.user.badge;
     _role = widget.user.role;
+    _isBot = widget.user.isBot;
+    _botVerified = widget.user.botVerified;
     _loadFullUserData();
     _subscribeToUserStatus();
   }
 
   @override
   void dispose() {
+    StoriesService.storiesRevision.removeListener(_onStoriesChanged);
     _statusChannel?.unsubscribe();
     _statusPollingTimer?.cancel();
     _rainbowController.dispose();
     super.dispose();
+  }
+
+  void _onStoriesChanged() {
+    _loadStories();
   }
 
   Map<String, dynamic>? _firstRow(dynamic response) {
@@ -170,6 +208,45 @@ class _ProfileDialogState extends State<ProfileDialog>
 
   Future<void> _loadFullUserData() async {
     try {
+      final botRecord = await Supabase.instance.client
+          .from('bots')
+          .select('name, tag, description, avatar_url, is_verified')
+          .eq('id', widget.user.id)
+          .maybeSingle();
+      if (botRecord != null) {
+        if (!mounted) return;
+        setState(() {
+          _isBot = true;
+          _botVerified = botRecord['is_verified'] == true;
+          _name = botRecord['name'] as String? ?? widget.user.name;
+          _tag = botRecord['tag'] as String? ?? widget.user.tag;
+          _bio = botRecord['description'] as String? ?? '';
+          _avatarUrl = botRecord['avatar_url'] as String? ?? '';
+          _currentStatus = 'bot';
+          _email = '';
+          _role = 'bot';
+          _isLoading = false;
+        });
+        return;
+      }
+
+      if (widget.user.isBot) {
+        if (!mounted) return;
+        setState(() {
+          _isBot = true;
+          _botVerified = widget.user.botVerified;
+          _name = widget.user.name;
+          _tag = widget.user.tag;
+          _bio = widget.user.bio ?? '';
+          _avatarUrl = widget.user.avatarUrl ?? '';
+          _currentStatus = 'bot';
+          _email = '';
+          _role = 'bot';
+          _isLoading = false;
+        });
+        return;
+      }
+
       final response = await Supabase.instance.client.rpc(
         'get_user_by_id',
         params: {'p_id': widget.user.id},
@@ -291,6 +368,45 @@ class _ProfileDialogState extends State<ProfileDialog>
         } catch (_) {}
       }
 
+      final storedMusicPath =
+          metadata['profile_music_path'] as String? ??
+          StorageUploadService.objectPathFromStorageUrl(
+            'chat_files',
+            metadata['profile_music_url'],
+          );
+      final storedMusicUrl = metadata['profile_music_url'] as String?;
+      String? profileMusicUrl;
+      var canViewProfileMusic =
+          Supabase.instance.client.auth.currentUser?.id == widget.user.id;
+      if (!canViewProfileMusic) {
+        try {
+          final result = await Supabase.instance.client.rpc(
+            'can_view_profile_music',
+            params: {'p_user_id': widget.user.id},
+          );
+          canViewProfileMusic = result == true;
+        } catch (error) {
+          debugPrint('Не удалось проверить видимость музыки профиля: $error');
+        }
+      }
+
+      if (canViewProfileMusic) {
+        if (storedMusicPath != null) {
+          try {
+            profileMusicUrl = await StorageUploadService.createSignedUrl(
+              bucket: 'chat_files',
+              path: storedMusicPath,
+              expiresIn: 3600,
+            );
+          } catch (error) {
+            debugPrint('Не удалось обновить ссылку на музыку профиля: $error');
+            profileMusicUrl = storedMusicUrl;
+          }
+        } else {
+          profileMusicUrl = storedMusicUrl;
+        }
+      }
+
       if (mounted) {
         setState(() {
           _name = (name as String?)?.isNotEmpty == true
@@ -310,6 +426,10 @@ class _ProfileDialogState extends State<ProfileDialog>
           _birthDate = birthDate?.toString();
           _inviteCode = (inviteCode as String?);
           _invitedByUserId = invitedByUserId?.toString() ?? '';
+          _profileMusicUrl = profileMusicUrl?.trim();
+          _profileMusicName = canViewProfileMusic
+              ? (metadata['profile_music_name'] as String?)?.trim()
+              : null;
           _invitedByCode = invitedByCode?.toString() ?? '';
           _invitedByName = inviterName ?? '';
           _invitedByTag = inviterTag ?? '';
@@ -518,7 +638,7 @@ class _ProfileDialogState extends State<ProfileDialog>
   }
 
   Future<void> _subscribeToUserStatus() async {
-    if (widget.user.id.isEmpty) return;
+    if (_isBot || widget.user.isBot || widget.user.id.isEmpty) return;
     try {
       _statusChannel?.unsubscribe();
       _startStatusPolling();
@@ -528,6 +648,7 @@ class _ProfileDialogState extends State<ProfileDialog>
   }
 
   void _startStatusPolling() {
+    if (_isBot || widget.user.isBot) return;
     _statusPollingTimer?.cancel();
     _statusPollingTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       if (!mounted) return;
@@ -579,12 +700,6 @@ class _ProfileDialogState extends State<ProfileDialog>
     );
   }
 
-  Color _getStatusColor(String? status) {
-    return UserStatusService.getStatusColor(
-      UserStatusService.normalizeStatus(status),
-    );
-  }
-
   // —— Галочки/бейджи как в ProfileScreen ——
   Widget _buildRainbowIcon({double size = 22}) {
     return AnimatedBuilder(
@@ -612,8 +727,7 @@ class _ProfileDialogState extends State<ProfileDialog>
   }
 
   Widget _buildRoleIcon(String? role) {
-    final badge = Badges.byId(_badge);
-    if (badge != null) {
+    if (Badges.byId(_badge) != null) {
       return BadgeIcon(badgeId: _badge, size: 22);
     }
     switch (role) {
@@ -646,375 +760,368 @@ class _ProfileDialogState extends State<ProfileDialog>
         _hasSubscription;
   }
 
-  Color _getRoleColor(String? role) {
-    final badge = Badges.byId(_badge);
-    if (badge != null) return badge.color;
-    switch (role) {
-      case 'owner':
-        return const Color(0xFFFFD700);
-      case 'admin':
-        return Colors.red;
-      case 'official':
-        return Colors.blue;
-      case 'moderator':
-        return Colors.green;
-    }
-    if (role == 'premium' || _hasSubscription) return const Color(0xFFFFD700);
-    return Colors.deepPurple;
-  }
-
   @override
   Widget build(BuildContext context) {
+    final screenSize = MediaQuery.sizeOf(context);
+    final isPhone = screenSize.width < 600;
+    final screenPadding = MediaQuery.paddingOf(context);
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-      child: Container(
-        width: double.infinity,
-        constraints: BoxConstraints(
-          maxWidth: 420,
-          maxHeight: MediaQuery.of(context).size.height * 0.88,
+    final profileContent = Container(
+      width: double.infinity,
+      constraints: BoxConstraints(
+        maxWidth: isPhone ? double.infinity : 420,
+        maxHeight: isPhone ? screenSize.height : screenSize.height * 0.88,
+      ),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF181818), Color(0xFF090909), Color(0xFF111111)],
         ),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF172633), Color(0xFF101820), Color(0xFF11171D)],
-          ),
-          borderRadius: BorderRadius.circular(28),
-          border: Border.all(color: const Color(0xFF344754)),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF05090D).withValues(alpha: 0.7),
-              blurRadius: 30,
-              offset: const Offset(0, 10),
-            ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: Stack(
-            children: [
-              SingleChildScrollView(
-                padding: EdgeInsets.fromLTRB(
-                  24,
-                  30,
-                  24,
-                  24 + bottomInset * 0.1,
+        borderRadius: BorderRadius.circular(isPhone ? 0 : 28),
+        border: isPhone ? null : Border.all(color: const Color(0xFF343434)),
+        boxShadow: isPhone
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.7),
+                  blurRadius: 30,
+                  offset: const Offset(0, 10),
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Аватарка с обводкой по роли
-                    GestureDetector(
-                      onTap: _avatarUrl.isEmpty
-                          ? null
-                          : () => showAvatarPreview(
-                              context,
-                              image: NetworkImage(_avatarUrl),
-                            ),
-                      child: ProfileNftAvatarOrbit(
-                        gifts: [
-                          for (var slot = 0; slot < 4; slot++)
-                            if (_decorationGift('avatar', slot)
-                                case final gift?)
-                              gift,
-                        ],
-                        child: Container(
-                          width: 112,
-                          height: 112,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            gradient: LinearGradient(
-                              colors: [
-                                _getRoleColor(_role),
-                                _getRoleColor(_role).withValues(alpha: 0.35),
-                              ],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: _getRoleColor(
-                                  _role,
-                                ).withValues(alpha: 0.3),
-                                blurRadius: 20,
-                                offset: const Offset(0, 8),
-                              ),
-                            ],
+              ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(isPhone ? 0 : 28),
+        child: Stack(
+          children: [
+            SingleChildScrollView(
+              padding: EdgeInsets.fromLTRB(
+                isPhone ? 20 : 24,
+                (isPhone ? screenPadding.top : 0) + 30,
+                isPhone ? 20 : 24,
+                24 + bottomInset + (isPhone ? screenPadding.bottom : 0),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Аватарка с обводкой по роли
+                  GestureDetector(
+                    onTap: _avatarUrl.isEmpty
+                        ? null
+                        : () => showAvatarPreview(
+                            context,
+                            image: NetworkImage(_avatarUrl),
                           ),
-                          padding: const EdgeInsets.all(3),
-                          child: Container(
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Color(0xFF101820),
-                            ),
-                            child: ClipOval(
-                              child: _avatarUrl.isNotEmpty
-                                  ? Image.network(
-                                      _avatarUrl,
-                                      width: 106,
-                                      height: 106,
-                                      fit: BoxFit.cover,
-                                      errorBuilder: (_, _, _) =>
-                                          _buildInitials(),
-                                    )
-                                  : _buildInitials(),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-
-                    // Имя + галочка/бейдж как в profile_screen
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Flexible(
-                          child: ProfileNftNameDecoration(
-                            gift: _decorationGift('name', 0),
-                            child: Text(
-                              _name.isNotEmpty ? _name : widget.user.name,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 24,
-                                fontWeight: FontWeight.w700,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ),
-                        if (!_isLoading && _shouldShowVerification(_role)) ...[
-                          const SizedBox(width: 6),
-                          _buildRoleIcon(_role),
-                        ],
+                    child: ProfileNftAvatarOrbit(
+                      gifts: [
+                        for (var slot = 0; slot < 4; slot++)
+                          ?_decorationGift('avatar', slot),
                       ],
-                    ),
-                    if (Supabase.instance.client.auth.currentUser?.id ==
-                        widget.user.id)
-                      TextButton.icon(
-                        onPressed: _openDecorationPicker,
-                        icon: const Icon(Icons.auto_awesome, size: 17),
-                        label: const Text('Украшения профиля'),
-                        style: TextButton.styleFrom(
-                          foregroundColor: const Color(0xFFD8C27A),
-                        ),
-                      ),
-                    const SizedBox(height: 4),
-
-                    // Тэг
-                    GestureDetector(
-                      onTap: () {
-                        final tagToCopy = _tag.isNotEmpty
-                            ? _tag
-                            : widget.user.tag;
-                        final usernames = [
-                          if (tagToCopy.isNotEmpty) tagToCopy,
-                          ..._additionalUsernames,
-                        ];
-                        final copiedUsernames = usernames.isEmpty
-                            ? ''
-                            : formatUsernameList(
-                                usernames.first,
-                                usernames.skip(1),
-                              );
-                        Clipboard.setData(ClipboardData(text: copiedUsernames));
-                        Toast.success(context, 'Юзернеймы скопированы');
-                      },
                       child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 12,
-                        ),
+                        width: 112,
+                        height: 112,
                         decoration: BoxDecoration(
-                          color: const Color(0xFF22323E),
-                          border: Border.all(color: const Color(0xFF344754)),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'ЮЗЕРНЕЙМ',
-                              style: TextStyle(
-                                color: Color(0xFF8FA7B5),
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 1.1,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            UsernameMentionText(
-                              text: formatUsernameList(
-                                _tag.isNotEmpty ? _tag : widget.user.tag,
-                                _additionalUsernames,
-                              ),
-                              style: const TextStyle(
-                                color: Color(0xFFB8C7D0),
-                                fontSize: 14,
-                                height: 1.5,
-                              ),
-                              linkColor: const Color(0xFFB8C7D0),
-                              onUsernameTap: _openMentionedUsername,
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: [
+                              Colors.white,
+                              Colors.white.withValues(alpha: 0.35),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.white.withValues(alpha: 0.16),
+                              blurRadius: 20,
+                              offset: const Offset(0, 8),
                             ),
                           ],
                         ),
+                        padding: const EdgeInsets.all(3),
+                        child: Container(
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Color(0xFF090909),
+                          ),
+                          child: ClipOval(
+                            child: _avatarUrl.isNotEmpty
+                                ? Image.network(
+                                    _avatarUrl,
+                                    width: 106,
+                                    height: 106,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, _, _) => _buildInitials(),
+                                  )
+                                : _buildInitials(),
+                          ),
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 10),
+                  ),
+                  const SizedBox(height: 18),
 
-                    // Статус
+                  // Имя + галочка/бейдж как в profile_screen
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Flexible(
+                        child: ProfileNftNameDecoration(
+                          gift: _decorationGift('name', 0),
+                          child: Text(
+                            _name.isNotEmpty ? _name : widget.user.name,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                      if (!_isLoading && _shouldShowVerification(_role)) ...[
+                        const SizedBox(width: 6),
+                        _buildRoleIcon(_role),
+                      ],
+                      if (_isBot) ...[
+                        const SizedBox(width: 6),
+                        const Icon(
+                          Icons.smart_toy,
+                          color: Colors.white70,
+                          size: 20,
+                        ),
+                        if (_botVerified) ...[
+                          const SizedBox(width: 3),
+                          const Icon(
+                            Icons.verified,
+                            color: Color(0xFF1A73E8),
+                            size: 20,
+                          ),
+                        ],
+                      ],
+                    ],
+                  ),
+                  if (Supabase.instance.client.auth.currentUser?.id ==
+                      widget.user.id)
+                    TextButton.icon(
+                      onPressed: _openDecorationPicker,
+                      icon: const Icon(Icons.auto_awesome, size: 17),
+                      label: const Text('Украшения профиля'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  if (_profileMusicUrl != null &&
+                      _profileMusicUrl!.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    ProfileMusicCard(
+                      url: _profileMusicUrl!,
+                      title: _profileMusicName?.isNotEmpty == true
+                          ? _profileMusicName!
+                          : 'Музыка профиля',
+                    ),
+                  ],
+                  const SizedBox(height: 4),
+
+                  // Тэг
+                  GestureDetector(
+                    onTap: () {
+                      final tagToCopy = _tag.isNotEmpty
+                          ? _tag
+                          : widget.user.tag;
+                      final usernames = [
+                        if (tagToCopy.isNotEmpty) tagToCopy,
+                        ..._additionalUsernames,
+                      ];
+                      final copiedUsernames = usernames.isEmpty
+                          ? ''
+                          : formatUsernameList(
+                              usernames.first,
+                              usernames.skip(1),
+                            );
+                      Clipboard.setData(ClipboardData(text: copiedUsernames));
+                      Toast.success(context, 'Юзернеймы скопированы');
+                    },
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF171717),
+                        border: Border.all(color: const Color(0xFF393939)),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'ЮЗЕРНЕЙМ',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 1.1,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          UsernameMentionText(
+                            text: formatUsernameList(
+                              _tag.isNotEmpty ? _tag : widget.user.tag,
+                              _additionalUsernames,
+                            ),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              height: 1.5,
+                            ),
+                            linkColor: Colors.white,
+                            onUsernameTap: _openMentionedUsername,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Статус
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1C1C1C),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _isBot ? Icons.smart_toy : Icons.circle,
+                          color: Colors.white70,
+                          size: _isBot ? 14 : 8,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _isBot ? 'Чат-бот' : _getStatusText(_currentStatus),
+                          style: TextStyle(color: Colors.white70, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (!_isBot &&
+                      (widget.onAudioCall != null ||
+                          widget.onVideoCall != null)) ...[
+                    const SizedBox(height: 18),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (widget.onAudioCall != null)
+                          _buildCallAction(
+                            icon: Icons.call_rounded,
+                            tooltip: 'Аудиозвонок',
+                            onPressed: widget.onAudioCall!,
+                          ),
+                        if (widget.onAudioCall != null &&
+                            widget.onVideoCall != null)
+                          const SizedBox(width: 14),
+                        if (widget.onVideoCall != null)
+                          _buildCallAction(
+                            icon: Icons.videocam_rounded,
+                            tooltip: 'Видеозвонок',
+                            onPressed: widget.onVideoCall!,
+                          ),
+                      ],
+                    ),
+                  ],
+
+                  // Бейдж строкой если есть
+                  if (Badges.byId(_badge) case final badge?) ...[
+                    const SizedBox(height: 10),
                     Container(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
+                        horizontal: 10,
                         vertical: 6,
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1B3035),
-                        borderRadius: BorderRadius.circular(20),
+                        color: badge.color.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: _getStatusColor(
-                            _currentStatus,
-                          ).withValues(alpha: 0.3),
+                          color: badge.color.withValues(alpha: 0.3),
                         ),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: BoxDecoration(
-                              color: _getStatusColor(_currentStatus),
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
+                          BadgeIcon(badgeId: _badge, size: 18),
+                          const SizedBox(width: 6),
                           Text(
-                            _getStatusText(_currentStatus),
+                            Badges.byId(_badge)!.name,
                             style: TextStyle(
-                              color: _getStatusColor(_currentStatus),
+                              color: badge.color,
                               fontSize: 13,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ],
                       ),
                     ),
-                    if (widget.onAudioCall != null ||
-                        widget.onVideoCall != null) ...[
-                      const SizedBox(height: 18),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          if (widget.onAudioCall != null)
-                            _buildCallAction(
-                              icon: Icons.call_rounded,
-                              tooltip: 'Аудиозвонок',
-                              onPressed: widget.onAudioCall!,
-                            ),
-                          if (widget.onAudioCall != null &&
-                              widget.onVideoCall != null)
-                            const SizedBox(width: 14),
-                          if (widget.onVideoCall != null)
-                            _buildCallAction(
-                              icon: Icons.videocam_rounded,
-                              tooltip: 'Видеозвонок',
-                              onPressed: widget.onVideoCall!,
-                            ),
-                        ],
-                      ),
-                    ],
+                  ],
 
-                    // Бейдж строкой если есть
-                    if (Badges.byId(_badge) != null) ...[
-                      const SizedBox(height: 10),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Badges.byId(
-                            _badge,
-                          )!.color.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Badges.byId(
-                              _badge,
-                            )!.color.withValues(alpha: 0.3),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            BadgeIcon(badgeId: _badge, size: 18),
-                            const SizedBox(width: 6),
-                            Text(
-                              Badges.byId(_badge)!.name,
-                              style: TextStyle(
-                                color: Badges.byId(_badge)!.color,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
+                  const SizedBox(height: 18),
+                  const Divider(color: Color(0xFF343434)),
+                  const SizedBox(height: 14),
+
+                  // Био
+                  if (!_isBot && _bio.isNotEmpty) ...[
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'О себе',
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
-                    ],
-
-                    const SizedBox(height: 18),
-                    const Divider(color: Color(0xFF30414C)),
-                    const SizedBox(height: 14),
-
-                    // Био
-                    if (_bio.isNotEmpty) ...[
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'О себе',
-                          style: const TextStyle(
-                            color: Colors.grey,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
+                    ),
+                    const SizedBox(height: 4),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF151515),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFF343434)),
                       ),
-                      const SizedBox(height: 4),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF17232C),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0xFF30414C)),
+                      child: UsernameMentionText(
+                        text: _bio,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          height: 1.4,
                         ),
-                        child: UsernameMentionText(
-                          text: _bio,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            height: 1.4,
-                          ),
-                          linkColor: const Color(0xFF8ECFFF),
-                          onUsernameTap: _openMentionedUsername,
-                        ),
+                        linkColor: Colors.white,
+                        onUsernameTap: _openMentionedUsername,
                       ),
-                      const SizedBox(height: 12),
-                    ],
+                    ),
+                    const SizedBox(height: 12),
+                  ],
 
-                    // Инфо блок как в profile screen
-                    _buildInfoBlock(),
-                    const SizedBox(height: 14),
+                  // Инфо блок как в profile screen
+                  _buildInfoBlock(),
+                  const SizedBox(height: 14),
 
-                    // Статистика
+                  if (!_isBot) ...[
                     Row(
                       children: [
                         Expanded(
                           child: _buildStatCard(
                             icon: Icons.card_giftcard,
-                            color: const Color(0xFFFFD700),
+                            color: Colors.white,
                             value: '$_giftsCount',
                             label: 'Подарков',
                           ),
@@ -1023,7 +1130,7 @@ class _ProfileDialogState extends State<ProfileDialog>
                         Expanded(
                           child: _buildStatCard(
                             icon: Icons.message,
-                            color: Colors.blue,
+                            color: Colors.white70,
                             value: '$_messagesCount',
                             label: 'Сообщений',
                           ),
@@ -1031,7 +1138,6 @@ class _ProfileDialogState extends State<ProfileDialog>
                       ],
                     ),
                     const SizedBox(height: 14),
-
                     ProfileContentTabs(
                       stories: _userStories,
                       isLoadingStories: _isLoadingStories,
@@ -1048,45 +1154,59 @@ class _ProfileDialogState extends State<ProfileDialog>
                       ownerName: _name.isNotEmpty ? _name : widget.user.name,
                       ownerTag: _tag.isNotEmpty ? _tag : widget.user.tag,
                       ownerAvatarUrl: _avatarUrl,
-                    ),
-
-                    const SizedBox(height: 18),
-                    SizedBox(
-                      width: double.infinity,
-                      child: TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        style: TextButton.styleFrom(
-                          backgroundColor: const Color(0xFF243B49),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        child: const Text('Закрыть'),
-                      ),
+                      canDeleteStories:
+                          Supabase.instance.client.auth.currentUser?.id ==
+                          widget.user.id,
                     ),
                   ],
-                ),
-              ),
-              Positioned(
-                top: 6,
-                right: 6,
-                child: IconButton(
-                  tooltip: 'Закрыть профиль',
-                  onPressed: () => Navigator.pop(context),
-                  style: IconButton.styleFrom(
-                    backgroundColor: const Color(0xFF22323E),
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(42, 42),
+
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: TextButton.styleFrom(
+                        backgroundColor: const Color(0xFF242424),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: const Text('Закрыть'),
+                    ),
                   ),
-                  icon: const Icon(Icons.close_rounded, size: 22),
-                ),
+                ],
               ),
-            ],
-          ),
+            ),
+            Positioned(
+              top: screenPadding.top + 6,
+              right: 6,
+              child: IconButton(
+                tooltip: 'Закрыть профиль',
+                onPressed: () => Navigator.pop(context),
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0xFF242424),
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(42, 42),
+                ),
+                icon: const Icon(Icons.close_rounded, size: 22),
+              ),
+            ),
+          ],
         ),
       ),
+    );
+    if (widget.fullScreen) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF090909),
+        body: SafeArea(child: SizedBox.expand(child: profileContent)),
+      );
+    }
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      child: profileContent,
     );
   }
 
@@ -1102,17 +1222,64 @@ class _ProfileDialogState extends State<ProfileDialog>
         onPressed();
       },
       style: IconButton.styleFrom(
-        backgroundColor: const Color(0xFF243B49),
-        foregroundColor: const Color(0xFFB9E6F8),
+        backgroundColor: const Color(0xFF242424),
+        foregroundColor: Colors.white,
         fixedSize: const Size(54, 54),
         shape: const CircleBorder(),
-        side: const BorderSide(color: Color(0xFF3B5968)),
+        side: const BorderSide(color: Color(0xFF505050)),
       ),
       icon: Icon(icon, size: 23),
     );
   }
 
   Widget _buildInfoBlock() {
+    if (_isBot) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFF151515),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF343434), width: 1),
+        ),
+        child: Column(
+          children: [
+            _buildInfoRow(
+              icon: Icons.smart_toy_outlined,
+              label: 'Тип',
+              value: 'Чат-бот',
+              iconBg: Colors.white10,
+              iconColor: Colors.white70,
+            ),
+            const SizedBox(height: 10),
+            _buildInfoRow(
+              icon: Icons.description_outlined,
+              label: 'Описание',
+              value: _bio.isEmpty ? 'Описание не указано' : _bio,
+              iconBg: Colors.white10,
+              iconColor: Colors.white70,
+            ),
+            const SizedBox(height: 10),
+            _buildInfoRow(
+              icon: Icons.fingerprint,
+              label: 'ID бота',
+              value: widget.user.id,
+              iconBg: Colors.white10,
+              iconColor: Colors.white70,
+              trailing: IconButton(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: widget.user.id));
+                  Toast.success(context, 'ID бота скопирован');
+                },
+                icon: const Icon(Icons.copy, color: Colors.grey, size: 16),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     final birth = _birthDate != null && _birthDate!.isNotEmpty
         ? _formatBirthDate(_birthDate)
         : (widget.user.birthDate != null
@@ -1125,9 +1292,9 @@ class _ProfileDialogState extends State<ProfileDialog>
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF17232C),
+        color: const Color(0xFF151515),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF30414C), width: 1),
+        border: Border.all(color: const Color(0xFF343434), width: 1),
       ),
       child: Column(
         children: [
@@ -1135,33 +1302,34 @@ class _ProfileDialogState extends State<ProfileDialog>
             icon: Icons.cake,
             label: 'День рождения',
             value: birth,
-            iconBg: Colors.pink.withValues(alpha: 0.2),
-            iconColor: Colors.pink,
+            iconBg: Colors.white10,
+            iconColor: Colors.white70,
           ),
           const SizedBox(height: 10),
           _buildInfoRow(
             icon: Icons.phone,
             label: 'Телефон',
             value: phone,
-            iconBg: Colors.green.withValues(alpha: 0.2),
-            iconColor: Colors.green,
+            iconBg: Colors.white10,
+            iconColor: Colors.white70,
           ),
           const SizedBox(height: 10),
-          _buildInfoRow(
-            icon: Icons.email,
-            label: 'Email',
-            value: email,
-            iconBg: Colors.blue.withValues(alpha: 0.2),
-            iconColor: Colors.blue,
-          ),
+          if (!_isBot)
+            _buildInfoRow(
+              icon: Icons.email,
+              label: 'Email',
+              value: email,
+              iconBg: Colors.white10,
+              iconColor: Colors.white70,
+            ),
           if (_inviteCode != null && _inviteCode!.isNotEmpty) ...[
             const SizedBox(height: 10),
             _buildInfoRow(
               icon: Icons.link,
               label: 'Код приглашения',
               value: _inviteCode!,
-              iconBg: Colors.orange.withValues(alpha: 0.2),
-              iconColor: Colors.orange,
+              iconBg: Colors.white10,
+              iconColor: Colors.white70,
               trailing: IconButton(
                 onPressed: () {
                   Clipboard.setData(ClipboardData(text: _inviteCode!));
@@ -1179,8 +1347,8 @@ class _ProfileDialogState extends State<ProfileDialog>
               icon: Icons.person_add,
               label: 'Пригласил',
               value: '$_invitedByName (@$_invitedByTag)',
-              iconBg: Colors.purple.withValues(alpha: 0.2),
-              iconColor: Colors.purple,
+              iconBg: Colors.white10,
+              iconColor: Colors.white70,
             ),
           ] else if (_invitedByUserId.isNotEmpty && _isLoadingInviter) ...[
             const SizedBox(height: 10),
@@ -1188,8 +1356,8 @@ class _ProfileDialogState extends State<ProfileDialog>
               icon: Icons.person_add,
               label: 'Пригласил',
               value: 'Загрузка...',
-              iconBg: Colors.purple.withValues(alpha: 0.2),
-              iconColor: Colors.purple,
+              iconBg: Colors.white10,
+              iconColor: Colors.white70,
             ),
           ],
         ],
@@ -1206,9 +1374,9 @@ class _ProfileDialogState extends State<ProfileDialog>
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14),
       decoration: BoxDecoration(
-        color: const Color(0xFF17232C),
+        color: const Color(0xFF151515),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF30414C), width: 1),
+        border: Border.all(color: const Color(0xFF343434), width: 1),
       ),
       child: Column(
         children: [

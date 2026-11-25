@@ -17,7 +17,12 @@ class StorageUploadService {
 
     final segments = uri.pathSegments;
     final objectIndex = segments.indexOf('object');
-    if (objectIndex == -1) return null;
+    if (objectIndex == -1) {
+      final bucketIndex = segments.indexOf(bucket);
+      if (bucketIndex == -1) return null;
+      final objectPath = segments.skip(bucketIndex + 1).join('/');
+      return objectPath.isEmpty ? null : objectPath;
+    }
 
     var bucketIndex = objectIndex + 1;
     if (bucketIndex < segments.length &&

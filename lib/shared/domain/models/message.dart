@@ -47,11 +47,14 @@ class Message {
   final String? giftNftAnimationUrl;
   final String? imageCaption;
   final bool isFile;
+  final bool viewOnce;
+  final bool viewOnceViewed;
   final String? fileName;
   final String? fileUrl;
   final int? fileSize;
   final String? fileMimeType;
   final bool isVideoNote;
+  final List<List<Map<String, dynamic>>> botInlineKeyboard;
 
   const Message({
     required this.id,
@@ -88,11 +91,14 @@ class Message {
     this.giftNftAnimationUrl,
     this.imageCaption,
     this.isFile = false,
+    this.viewOnce = false,
+    this.viewOnceViewed = false,
     this.fileName,
     this.fileUrl,
     this.fileSize,
     this.fileMimeType,
     this.isVideoNote = false,
+    this.botInlineKeyboard = const [],
     this.isPoll = false,
     this.pollOptions = const [],
     this.pollAllowMultiple = false,
@@ -158,11 +164,28 @@ class Message {
     return contentType.startsWith('image/') || contentType.contains('sticker');
   }
 
+  static List<List<Map<String, dynamic>>> parseBotInlineKeyboard(
+    dynamic value,
+  ) {
+    if (value is! List) return const [];
+    return value
+        .whereType<List>()
+        .map(
+          (row) => row
+              .whereType<Map>()
+              .map((button) => Map<String, dynamic>.from(button))
+              .toList(),
+        )
+        .toList();
+  }
+
   static String notificationPreview(Map<String, dynamic> json) {
     final contentType = (json['encrypted_content_type'] ?? '')
         .toString()
         .toLowerCase();
-    final fileMimeType = (json['file_mime_type'] ?? '').toString().toLowerCase();
+    final fileMimeType = (json['file_mime_type'] ?? '')
+        .toString()
+        .toLowerCase();
 
     if (isGiftMessage(json)) return 'Подарок';
     if (isStickerMessage(json)) return 'Стикер';
@@ -212,8 +235,9 @@ class Message {
 
   // Фабрика для создания из JSON (из Supabase)
   factory Message.fromJson(Map<String, dynamic> json, String currentUserId) {
-    final senderId = json['profile_id'] ?? '';
-    final isMe = senderId == currentUserId;
+    final botId = json['bot_id'];
+    final senderId = botId ?? json['profile_id'] ?? '';
+    final isMe = botId == null && senderId == currentUserId;
 
     // Проверяем, голосовое ли сообщение
     final isVoice = json['is_voice'] ?? false;
@@ -233,7 +257,9 @@ class Message {
 
     // Для голосовых сообщений контент не расшифровываем
     String content = json['encrypted_content'] ?? '';
-    if (isVoice) {
+    if (json['bot_plaintext'] == true) {
+      content = json['encrypted_content']?.toString() ?? '';
+    } else if (isVoice) {
       content = '🎤 Голосовое сообщение';
     } else if (isFile) {
       final fileName = json['file_name'] as String? ?? 'Файл';
@@ -276,17 +302,79 @@ class Message {
       replyToContent: json['reply_to_content'] as String?,
       replyToSender: json['reply_to_sender'] as String?,
       isFile: isFile,
+      viewOnce: json['view_once'] == true,
+      viewOnceViewed: json['view_once_viewed'] == true,
       fileName: json['file_name'] as String?,
       fileUrl: json['file_url'] as String?,
       fileSize: json['file_size'] as int?,
       fileMimeType: json['file_mime_type'] as String?,
       isVideoNote: json['encrypted_content_type'] == 'video_note',
       isPoll: json['encrypted_content_type'] == 'poll',
+      botInlineKeyboard: parseBotInlineKeyboard(json['bot_inline_keyboard']),
       pollOptions: (json['poll_options'] as List<dynamic>? ?? const [])
           .map((option) => option.toString())
           .toList(),
       pollAllowMultiple: json['poll_allow_multiple'] == true,
       pollClosed: json['poll_closed'] == true,
+    );
+  }
+
+  factory Message.fromCacheJson(
+    Map<String, dynamic> json,
+    String currentUserId,
+  ) {
+    final message = Message.fromJson(json, currentUserId);
+    final cachedSender = json['cached_sender'];
+    final rawReactions = json['reactions'];
+    final reactions = rawReactions is Map
+        ? rawReactions.map(
+            (key, value) => MapEntry(key.toString(), (value as num).toInt()),
+          )
+        : <String, int>{};
+    final rawReactionUsers = json['reaction_users'];
+    final reactionUsers = <String, List<User>>{};
+    if (rawReactionUsers is Map) {
+      for (final entry in rawReactionUsers.entries) {
+        if (entry.value is List) {
+          reactionUsers[entry.key.toString()] = (entry.value as List)
+              .whereType<Map>()
+              .map((user) => User.fromJson(Map<String, dynamic>.from(user)))
+              .toList();
+        }
+      }
+    }
+    final rawPollVotes = json['poll_votes'];
+    final pollVotes = rawPollVotes is Map
+        ? rawPollVotes.map(
+            (key, value) =>
+                MapEntry(int.parse(key.toString()), (value as num).toInt()),
+          )
+        : <int, int>{};
+
+    return message.copyWith(
+      sender: cachedSender is Map
+          ? User.fromJson(Map<String, dynamic>.from(cachedSender))
+          : null,
+      senderIsChannel: json['sender_is_channel'] == true,
+      isEdited: json['is_edited'] == true,
+      isDeleted: json['is_deleted'] == true,
+      isPinned: json['is_pinned'] == true,
+      readByOthers: json['read_by_others'] == true,
+      viewOnceViewed: json['view_once_viewed'] == true,
+      reactions: reactions,
+      reactionUsers: reactionUsers,
+      myReaction: json['my_reaction'] as String?,
+      isPoll: json['is_poll'] == true || message.isPoll,
+      pollOptions:
+          (json['poll_options'] as List<dynamic>? ?? message.pollOptions)
+              .map((option) => option.toString())
+              .toList(),
+      pollAllowMultiple: json['poll_allow_multiple'] == true,
+      pollClosed: json['poll_closed'] == true,
+      pollVotes: pollVotes,
+      myPollVotes: (json['my_poll_votes'] as List<dynamic>? ?? const [])
+          .map((value) => (value as num).toInt())
+          .toList(),
     );
   }
 
@@ -326,11 +414,14 @@ class Message {
     String? replyToContent,
     String? replyToSender,
     bool? isFile,
+    bool? viewOnce,
+    bool? viewOnceViewed,
     String? fileName,
     String? fileUrl,
     int? fileSize,
     String? fileMimeType,
     bool? isVideoNote,
+    List<List<Map<String, dynamic>>>? botInlineKeyboard,
     bool? isPoll,
     List<String>? pollOptions,
     bool? pollAllowMultiple,
@@ -377,15 +468,17 @@ class Message {
       giftNftBackgroundColor:
           giftNftBackgroundColor ?? this.giftNftBackgroundColor,
       giftNftPattern: giftNftPattern ?? this.giftNftPattern,
-      giftNftAnimationUrl:
-          giftNftAnimationUrl ?? this.giftNftAnimationUrl,
+      giftNftAnimationUrl: giftNftAnimationUrl ?? this.giftNftAnimationUrl,
       imageCaption: imageCaption ?? this.imageCaption,
       isFile: isFile ?? this.isFile,
+      viewOnce: viewOnce ?? this.viewOnce,
+      viewOnceViewed: viewOnceViewed ?? this.viewOnceViewed,
       fileName: fileName ?? this.fileName,
       fileUrl: fileUrl ?? this.fileUrl,
       fileSize: fileSize ?? this.fileSize,
       fileMimeType: fileMimeType ?? this.fileMimeType,
       isVideoNote: isVideoNote ?? this.isVideoNote,
+      botInlineKeyboard: botInlineKeyboard ?? this.botInlineKeyboard,
       isPoll: isPoll ?? this.isPoll,
       pollOptions: pollOptions ?? this.pollOptions,
       pollAllowMultiple: pollAllowMultiple ?? this.pollAllowMultiple,
@@ -433,6 +526,7 @@ class Message {
       'reply_to_content': replyToContent,
       'reply_to_sender': replyToSender,
       'is_file': isFile,
+      'view_once': viewOnce,
       'file_name': fileName,
       'file_url': fileUrl,
       'file_size': fileSize,
@@ -449,4 +543,24 @@ class Message {
       'my_reaction': myReaction,
     };
   }
+
+  Map<String, dynamic> toCacheJson() => {
+    ...toJson(),
+    'cached_sender': sender?.toJson(),
+    'is_edited': isEdited,
+    'is_deleted': isDeleted,
+    'is_pinned': isPinned,
+    'read_by_others': readByOthers,
+    'view_once_viewed': viewOnceViewed,
+    'is_poll': isPoll,
+    'poll_votes': pollVotes.map(
+      (key, value) => MapEntry(key.toString(), value),
+    ),
+    'my_poll_votes': myPollVotes,
+    'bot_inline_keyboard': botInlineKeyboard,
+    'reaction_users': reactionUsers.map(
+      (key, users) =>
+          MapEntry(key, users.map((user) => user.toJson()).toList()),
+    ),
+  };
 }

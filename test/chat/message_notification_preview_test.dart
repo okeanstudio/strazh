@@ -2,6 +2,24 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:strazh/shared/domain/models/message.dart';
 
 void main() {
+  group('Message.fromJson bot identity', () {
+    test('uses the standalone bot ID and keeps the message plaintext', () {
+      final message = Message.fromJson({
+        'id': 'message-id',
+        'room_id': 'room-id',
+        'profile_id': 'owner-id',
+        'bot_id': 'bot-id',
+        'encrypted_content': 'Hello from the bot',
+        'bot_plaintext': true,
+        'created_at': '2026-11-18T00:00:00.000Z',
+      }, 'owner-id');
+
+      expect(message.senderId, 'bot-id');
+      expect(message.isMe, isFalse);
+      expect(message.content, 'Hello from the bot');
+    });
+  });
+
   group('Message.notificationPreview', () {
     test('recognizes stickers without decrypting their URL', () {
       expect(

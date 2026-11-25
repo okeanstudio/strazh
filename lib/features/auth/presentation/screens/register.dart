@@ -13,6 +13,7 @@ import 'package:strazh/features/auth/data/services/email_service.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:strazh/features/profile/data/services/avatar_service.dart';
 import 'package:strazh/shared/presentation/widgets/avatar_preview.dart';
+import 'package:strazh/features/auth/data/services/invite_registration_settings_service.dart';
 
 class RegisterScreen extends StatefulWidget {
   final String tag;
@@ -51,6 +52,7 @@ class _RegisterScreenState extends State<RegisterScreen>
   String? _inviteCodeStatusText;
   Color? _inviteCodeStatusColor;
   bool _isInviteCodeValid = false;
+  bool _isInviteCodeRequired = true;
   bool _isAgreed = false;
 
   bool _isLoading = false;
@@ -72,6 +74,7 @@ class _RegisterScreenState extends State<RegisterScreen>
     _tagController = TextEditingController(text: widget.tag);
     _emailController.addListener(_onEmailChanged);
     _inviteCodeController.addListener(_onInviteCodeChanged);
+    unawaited(_loadInviteCodeRequirement());
 
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 600),
@@ -104,6 +107,23 @@ class _RegisterScreenState extends State<RegisterScreen>
     _bioFocusNode.dispose();
     _animationController.dispose();
     super.dispose();
+  }
+
+  Future<bool> _loadInviteCodeRequirement() async {
+    try {
+      final required = await InviteRegistrationSettingsService.instance
+          .isInviteCodeRequired();
+      if (mounted) {
+        setState(() {
+          _isInviteCodeRequired = required;
+          if (!required) _isInviteCodeValid = true;
+        });
+      }
+      return required;
+    } catch (error) {
+      debugPrint('Не удалось загрузить настройку инвайт-кода: $error');
+      return _isInviteCodeRequired;
+    }
   }
 
   // ==================== ВЫБОР АВАТАРКИ ====================
@@ -386,6 +406,8 @@ class _RegisterScreenState extends State<RegisterScreen>
   }
 
   Future<void> _submitRegistration() async {
+    final inviteCodeRequired = await _loadInviteCodeRequirement();
+    if (!mounted) return;
     final String displayName = _displayNameController.text.trim();
     final String email = _emailController.text.trim();
     final String phone = _phoneController.text.trim();
@@ -425,7 +447,7 @@ class _RegisterScreenState extends State<RegisterScreen>
         return;
       }
     }
-    if (inviteCode.isEmpty || !_isInviteCodeValid) {
+    if (inviteCodeRequired && (inviteCode.isEmpty || !_isInviteCodeValid)) {
       Toast.error(context, 'Неверный код приглашения');
       return;
     }
@@ -456,7 +478,9 @@ class _RegisterScreenState extends State<RegisterScreen>
         'displayName': displayName,
         'phone': _getPhoneDigits(phone),
         'inviteCode': ownInviteCode,
-        'invitedByCode': inviteCode,
+        'invitedByCode': inviteCodeRequired && inviteCode.isNotEmpty
+            ? inviteCode
+            : null,
         'bio': bio,
         'avatarPath': _avatarImage?.path,
         'verificationCode': verificationCode,
@@ -489,6 +513,8 @@ class _RegisterScreenState extends State<RegisterScreen>
   // ==================== НАВИГАЦИЯ ПО ШАГАМ ====================
   void _nextStep() async {
     if (_currentStep == 1) {
+      final inviteCodeRequired = await _loadInviteCodeRequirement();
+      if (!mounted) return;
       final String email = _emailController.text.trim();
       final String phone = _phoneController.text.trim();
       final String inviteCode = _inviteCodeController.text.trim().toUpperCase();
@@ -515,7 +541,7 @@ class _RegisterScreenState extends State<RegisterScreen>
           return;
         }
       }
-      if (inviteCode.isEmpty || !_isInviteCodeValid) {
+      if (inviteCodeRequired && (inviteCode.isEmpty || !_isInviteCodeValid)) {
         Toast.error(context, 'Неверный код приглашения');
         return;
       }
@@ -790,7 +816,9 @@ class _RegisterScreenState extends State<RegisterScreen>
                           const SizedBox(height: 6),
                           Text(
                             _currentStep == 1
-                                ? 'Укажите email и 8-значный код приглашения. Код подтверждения регистрации придет на почту после заполнения анкеты.'
+                                ? _isInviteCodeRequired
+                                      ? 'Укажите email и 8-значный код приглашения. Код подтверждения регистрации придет на почту после заполнения анкеты.'
+                                      : 'Укажите email. Код подтверждения регистрации придет на почту после заполнения анкеты.'
                                 : _currentStep == 2
                                 ? 'Придумайте надежный пароль'
                                 : 'Добавьте информацию о себе',
@@ -847,25 +875,27 @@ class _RegisterScreenState extends State<RegisterScreen>
                                 fontSize: 11,
                               ),
                             ),
-                            const SizedBox(height: 20),
-                            _buildTextField(
-                              label: 'Код приглашения (8 символов) *',
-                              controller: _inviteCodeController,
-                              icon: Icons.card_giftcard_outlined,
-                              hint: 'ABC12345',
-                              statusText: _inviteCodeStatusText,
-                              statusColor: _inviteCodeStatusColor,
-                              isCode: true,
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              'Введите код от пригласившего вас пользователя. '
-                              'Это не код подтверждения из email.',
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(0.3),
-                                fontSize: 11,
+                            if (_isInviteCodeRequired) ...[
+                              const SizedBox(height: 20),
+                              _buildTextField(
+                                label: 'Код приглашения (8 символов) *',
+                                controller: _inviteCodeController,
+                                icon: Icons.card_giftcard_outlined,
+                                hint: 'ABC12345',
+                                statusText: _inviteCodeStatusText,
+                                statusColor: _inviteCodeStatusColor,
+                                isCode: true,
                               ),
-                            ),
+                              const SizedBox(height: 6),
+                              Text(
+                                'Введите код от пригласившего вас пользователя. '
+                                'Это не код подтверждения из email.',
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.3),
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
                           ],
 
                           if (_currentStep == 2) ...[

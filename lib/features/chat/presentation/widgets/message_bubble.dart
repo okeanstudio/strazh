@@ -9,11 +9,15 @@ import 'package:strazh/features/gifts/data/services/gift_service.dart';
 import 'package:strazh/features/settings/data/services/theme_service.dart';
 import 'package:strazh/core/utils/badges.dart';
 import 'package:strazh/features/profile/presentation/widgets/profile.dart';
+import 'package:strazh/features/bots/data/bot_service.dart';
 import 'package:strazh/features/gifts/presentation/widgets/gift_nft_link_preview.dart';
 import 'package:strazh/shared/presentation/widgets/toast.dart';
 import 'package:strazh/shared/presentation/widgets/username_mention_text.dart';
 import 'package:strazh/core/config/reactions.dart';
 import 'package:video_player/video_player.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:strazh/features/chat/data/services/storage_upload_service.dart';
 
 class MessageBubble extends StatelessWidget {
   final Message message;
@@ -39,10 +43,13 @@ class MessageBubble extends StatelessWidget {
   final void Function(String url, {String? caption})? onOpenImage;
   final void Function(String url)? onUrlTap;
   final ValueChanged<String>? onUsernameTap;
+  final ValueChanged<String>? onCommandTap;
+  final void Function(Message message, String callbackData)? onBotCallback;
   final void Function(String url, String fileName)? onDownloadFile;
   final void Function(String url, String fileName)? onSaveVideoNote;
   final void Function(String filePath)? onOpenFile;
   final void Function(String url, String fileName)? onOpenPdf;
+  final Future<void> Function(Message message)? onOpenViewOnce;
   final void Function(Message message)? onUnpin;
   final bool isPinned;
   final void Function(
@@ -54,6 +61,7 @@ class MessageBubble extends StatelessWidget {
   final bool isHighlighted;
   final bool showAvatar;
   final bool channelIsVerified;
+  final String? channelAvatarUrl;
   final VoidCallback? onChannelTap;
 
   const MessageBubble({
@@ -80,14 +88,18 @@ class MessageBubble extends StatelessWidget {
     this.onOpenImage,
     this.onUrlTap,
     this.onUsernameTap,
+    this.onCommandTap,
+    this.onBotCallback,
     this.onReplyPreviewTap,
     this.isHighlighted = false,
     this.onDownloadFile,
     this.onSaveVideoNote,
     this.onOpenFile,
     this.onOpenPdf,
+    this.onOpenViewOnce,
     this.showAvatar = true,
     this.channelIsVerified = false,
+    this.channelAvatarUrl,
     this.onChannelTap,
     this.onUnpin,
     required this.isPinned,
@@ -108,10 +120,62 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  String _formatDuration(Duration duration) {
-    final minutes = duration.inMinutes.toString().padLeft(2, '0');
-    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
-    return '$minutes:$seconds';
+  Widget _buildViewOnceMessage(BuildContext context) {
+    final label = message.isImage
+        ? 'Фото'
+        : message.isVoice
+        ? 'Голосовое сообщение'
+        : 'Видео';
+    final viewed = message.viewOnceViewed;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: viewed || onOpenViewOnce == null
+            ? null
+            : () => onOpenViewOnce!(message),
+        child: Container(
+          constraints: const BoxConstraints(minWidth: 210, maxWidth: 280),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF251B36),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: const Color(0xFF9B5CFF).withValues(alpha: 0.4),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                viewed ? Icons.visibility_off_rounded : Icons.timer_outlined,
+                color: const Color(0xFFD4B4FF),
+              ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    viewed ? 'Уже просмотрено' : '$label · один просмотр',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (!viewed) ...[
+                    const SizedBox(height: 3),
+                    const Text(
+                      'Нажмите, чтобы открыть',
+                      style: TextStyle(color: Colors.white60, fontSize: 12),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   String _getFileIcon(String fileName) {
@@ -138,6 +202,14 @@ class MessageBubble extends StatelessWidget {
       case 'xml':
       case 'csv':
         return '📋';
+      case 'mp3':
+      case 'm4a':
+      case 'aac':
+      case 'wav':
+      case 'ogg':
+      case 'flac':
+      case 'opus':
+        return '🎵';
       default:
         return '📎';
     }
@@ -167,8 +239,45 @@ class MessageBubble extends StatelessWidget {
       case 'xml':
       case 'csv':
         return Colors.cyan;
+      case 'mp3':
+      case 'm4a':
+      case 'aac':
+      case 'wav':
+      case 'ogg':
+      case 'flac':
+      case 'opus':
+        return Colors.purpleAccent;
       default:
         return Colors.grey;
+    }
+  }
+
+  Future<void> _addTrackToProfile({
+    required BuildContext context,
+    required String url,
+    required String title,
+  }) async {
+    try {
+      final supabase = Supabase.instance.client;
+      final user = supabase.auth.currentUser;
+      if (user == null) throw StateError('Нет авторизации');
+      final objectPath = StorageUploadService.objectPathFromStorageUrl(
+        'chat_files',
+        url,
+      );
+      if (objectPath == null) {
+        throw StateError('Не удалось определить путь к музыкальному файлу');
+      }
+      final metadata = Map<String, dynamic>.from(user.userMetadata ?? {});
+      metadata['profile_music_path'] = objectPath;
+      metadata.remove('profile_music_url');
+      metadata['profile_music_name'] = title;
+      await supabase.auth.updateUser(UserAttributes(data: metadata));
+      if (!context.mounted) return;
+      Toast.success(context, 'Музыка добавлена в профиль');
+    } catch (error) {
+      if (!context.mounted) return;
+      Toast.error(context, 'Не удалось добавить музыку: $error');
     }
   }
 
@@ -185,20 +294,25 @@ class MessageBubble extends StatelessWidget {
   void _showContextMenu(BuildContext context, Offset position) {
     final items = <PopupMenuEntry>[];
 
-    if (message.isVideoNote &&
+    final isVideoFile =
+        message.fileMimeType?.toLowerCase().startsWith('video/') == true;
+    if ((message.isVideoNote || isVideoFile) &&
         message.fileUrl != null &&
         onSaveVideoNote != null) {
       items.add(
         PopupMenuItem(
           onTap: () => onSaveVideoNote!(
             message.fileUrl!,
-            message.fileName ?? 'video_note.mp4',
+            message.fileName ?? (isVideoFile ? 'video.mp4' : 'video_note.mp4'),
           ),
           child: const Row(
             children: [
               Icon(Icons.save_alt_rounded, color: Colors.lightBlue, size: 20),
               SizedBox(width: 12),
-              Text('Сохранить', style: TextStyle(color: Colors.white)),
+              Text(
+                'Сохранить в галерею',
+                style: TextStyle(color: Colors.white),
+              ),
             ],
           ),
         ),
@@ -487,10 +601,8 @@ class MessageBubble extends StatelessWidget {
   void _showProfile(BuildContext context, app.User user) {
     showDialog(
       context: context,
-      builder: (context) => ProfileDialog(
-        user: user,
-        onUsernameTap: onUsernameTap,
-      ),
+      builder: (context) =>
+          ProfileDialog(user: user, onUsernameTap: onUsernameTap),
     );
   }
 
@@ -500,6 +612,55 @@ class MessageBubble extends StatelessWidget {
       return;
     }
     _showProfile(context, user);
+  }
+
+  Widget _buildSenderAvatar(app.User user, {String? fallbackAvatarUrl}) {
+    final isBotFather = user.isBot && user.id == BotService.botFatherId;
+    final preferredAvatarUrl = fallbackAvatarUrl?.trim();
+    final avatarUrl =
+        preferredAvatarUrl != null && preferredAvatarUrl.isNotEmpty
+        ? preferredAvatarUrl
+        : user.avatarUrl;
+    final initial = user.name.isNotEmpty
+        ? user.name.substring(0, 1).toUpperCase()
+        : '?';
+
+    Widget image;
+    if (isBotFather) {
+      image = Image.asset(
+        'assets/icon/bots/botfather_strazh.jpg',
+        fit: BoxFit.cover,
+      );
+    } else if (avatarUrl != null && avatarUrl.trim().isNotEmpty) {
+      image = Image.network(
+        avatarUrl,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          debugPrint('Не удалось загрузить аватар отправителя: $error');
+          return _buildAvatarFallback(initial);
+        },
+      );
+    } else {
+      image = _buildAvatarFallback(initial);
+    }
+
+    return CircleAvatar(
+      radius: 18,
+      backgroundColor: Colors.grey[800],
+      child: ClipOval(child: SizedBox.expand(child: image)),
+    );
+  }
+
+  Widget _buildAvatarFallback(String initial) {
+    return ColoredBox(
+      color: Colors.grey.shade800,
+      child: Center(
+        child: Text(
+          initial,
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+        ),
+      ),
+    );
   }
 
   Future<void> _downloadFile(BuildContext context) async {
@@ -549,6 +710,14 @@ class MessageBubble extends StatelessWidget {
               fontWeight: FontWeight.w500,
             ),
           ),
+          if (messageSender.isBot) ...[
+            const SizedBox(width: 4),
+            const Icon(Icons.smart_toy, color: Color(0xFFB89AFF), size: 14),
+            if (messageSender.botVerified) ...[
+              const SizedBox(width: 3),
+              const Icon(Icons.verified, color: Color(0xFF1A73E8), size: 14),
+            ],
+          ],
           if (isChannelAuthor && channelIsVerified) ...[
             const SizedBox(width: 4),
             const Icon(Icons.verified, color: Color(0xFF1A73E8), size: 14),
@@ -750,6 +919,18 @@ class MessageBubble extends StatelessWidget {
     return (MediaQuery.sizeOf(context).width * fraction)
         .clamp(0.0, 720.0)
         .toDouble();
+  }
+
+  double _maxImageWidth(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    if (screenWidth >= 900) {
+      return (screenWidth * 0.45).clamp(0.0, 460.0).toDouble();
+    }
+    return _maxMessageBubbleWidth(context, 0.65);
+  }
+
+  double _maxImageHeight(BuildContext context) {
+    return MediaQuery.sizeOf(context).width >= 900 ? 320 : 520;
   }
 
   String _pollVotesLabel(int count) {
@@ -968,6 +1149,8 @@ class MessageBubble extends StatelessWidget {
     final Widget bubble;
     if (message.isDeleted) {
       bubble = _buildDeletedMessage(context);
+    } else if (message.viewOnce && !isMe) {
+      bubble = _buildViewOnceMessage(context);
     } else if (message.isPoll) {
       bubble = _buildPollMessage(context);
     } else if (message.isVideoNote) {
@@ -1010,12 +1193,13 @@ class MessageBubble extends StatelessWidget {
     return UsernameMentionText(
       text: text,
       style: TextStyle(
-          color: isMe ? theme.myText : theme.otherText,
-          fontSize: 16,
+        color: isMe ? theme.myText : theme.otherText,
+        fontSize: 16,
       ),
       linkColor: linkColor,
       onUrlTap: onUrlTap,
       onUsernameTap: onUsernameTap,
+      onCommandTap: onCommandTap,
     );
   }
 
@@ -1057,23 +1241,10 @@ class MessageBubble extends StatelessWidget {
               GestureDetector(
                 onTap: () => _showSenderProfile(context, sender!),
                 onLongPress: () => _showSenderProfile(context, sender!),
-                child: CircleAvatar(
-                  radius: 18,
-                  backgroundImage:
-                      sender!.avatarUrl != null && sender!.avatarUrl!.isNotEmpty
-                      ? NetworkImage(sender!.avatarUrl!)
-                      : null,
-                  backgroundColor: Colors.grey[800],
-                  child: sender!.avatarUrl == null || sender!.avatarUrl!.isEmpty
-                      ? Text(
-                          sender!.name != null && sender!.name!.isNotEmpty
-                              ? sender!.name![0].toUpperCase()
-                              : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                          ),
-                        )
+                child: _buildSenderAvatar(
+                  sender!,
+                  fallbackAvatarUrl: message.senderIsChannel
+                      ? channelAvatarUrl
                       : null,
                 ),
               ),
@@ -1119,27 +1290,10 @@ class MessageBubble extends StatelessWidget {
               GestureDetector(
                 onTap: () => _showSenderProfile(context, message.sender!),
                 onLongPress: () => _showSenderProfile(context, message.sender!),
-                child: CircleAvatar(
-                  radius: 18,
-                  backgroundImage:
-                      message.sender!.avatarUrl != null &&
-                          message.sender!.avatarUrl!.isNotEmpty
-                      ? NetworkImage(message.sender!.avatarUrl!)
-                      : null,
-                  backgroundColor: Colors.grey[800],
-                  child:
-                      message.sender!.avatarUrl == null ||
-                          message.sender!.avatarUrl!.isEmpty
-                      ? Text(
-                          message.sender!.name != null &&
-                                  message.sender!.name!.isNotEmpty
-                              ? message.sender!.name![0].toUpperCase()
-                              : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                          ),
-                        )
+                child: _buildSenderAvatar(
+                  message.sender!,
+                  fallbackAvatarUrl: message.senderIsChannel
+                      ? channelAvatarUrl
                       : null,
                 ),
               ),
@@ -1154,6 +1308,71 @@ class MessageBubble extends StatelessWidget {
     final fileName = message.fileName ?? 'Файл';
     final fileSize = message.fileSize;
     final theme = ThemeService().currentTheme.value;
+    if (message.fileMimeType?.toLowerCase().startsWith('video/') == true &&
+        message.fileUrl != null) {
+      return _buildVideoFileMessage(context, fileName, fileSize);
+    }
+    final extension = fileName.split('.').last.toLowerCase();
+    const audioExtensions = {'mp3', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'opus'};
+    final isAudio =
+        message.fileMimeType?.toLowerCase().startsWith('audio/') == true ||
+        audioExtensions.contains(extension);
+    if (isAudio && message.fileUrl != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+        child: Row(
+          mainAxisAlignment: isMe
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: [
+            if (!isMe && sender != null && showAvatar)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: _buildSenderAvatar(sender!),
+              ),
+            if (!isMe && !showAvatar) const SizedBox(width: 44),
+            Flexible(
+              child: Container(
+                constraints: BoxConstraints(
+                  maxWidth: _maxMessageBubbleWidth(context, 0.72),
+                ),
+                decoration: BoxDecoration(
+                  color: isMe ? theme.myBubble : theme.otherBubble,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: _InlineAudioPlayer(
+                  url: message.fileUrl!,
+                  title: fileName,
+                  isMe: isMe,
+                  sizeLabel: _formatFileSize(fileSize),
+                  onAddToProfile: () => _addTrackToProfile(
+                    context: context,
+                    url: message.fileUrl!,
+                    title: fileName,
+                  ),
+                ),
+              ),
+            ),
+            if (isMe && message.sender != null && showAvatar)
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: GestureDetector(
+                  onTap: () => _showSenderProfile(context, message.sender!),
+                  onLongPress: () =>
+                      _showSenderProfile(context, message.sender!),
+                  child: _buildSenderAvatar(
+                    message.sender!,
+                    fallbackAvatarUrl: message.senderIsChannel
+                        ? channelAvatarUrl
+                        : null,
+                  ),
+                ),
+              ),
+            if (isMe && !showAvatar) const SizedBox(width: 44),
+          ],
+        ),
+      );
+    }
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
@@ -1174,25 +1393,10 @@ class MessageBubble extends StatelessWidget {
                 child: GestureDetector(
                   onTap: () => _showSenderProfile(context, sender!),
                   onLongPress: () => _showSenderProfile(context, sender!),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundImage:
-                        sender!.avatarUrl != null &&
-                            sender!.avatarUrl!.isNotEmpty
-                        ? NetworkImage(sender!.avatarUrl!)
-                        : null,
-                    backgroundColor: Colors.grey[800],
-                    child:
-                        sender!.avatarUrl == null || sender!.avatarUrl!.isEmpty
-                        ? Text(
-                            sender!.name != null && sender!.name!.isNotEmpty
-                                ? sender!.name![0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                            ),
-                          )
+                  child: _buildSenderAvatar(
+                    sender!,
+                    fallbackAvatarUrl: message.senderIsChannel
+                        ? channelAvatarUrl
                         : null,
                   ),
                 ),
@@ -1378,27 +1582,10 @@ class MessageBubble extends StatelessWidget {
                   onTap: () => _showSenderProfile(context, message.sender!),
                   onLongPress: () =>
                       _showSenderProfile(context, message.sender!),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundImage:
-                        message.sender!.avatarUrl != null &&
-                            message.sender!.avatarUrl!.isNotEmpty
-                        ? NetworkImage(message.sender!.avatarUrl!)
-                        : null,
-                    backgroundColor: Colors.grey[800],
-                    child:
-                        message.sender!.avatarUrl == null ||
-                            message.sender!.avatarUrl!.isEmpty
-                        ? Text(
-                            message.sender!.name != null &&
-                                    message.sender!.name!.isNotEmpty
-                                ? message.sender!.name![0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                            ),
-                          )
+                  child: _buildSenderAvatar(
+                    message.sender!,
+                    fallbackAvatarUrl: message.senderIsChannel
+                        ? channelAvatarUrl
                         : null,
                   ),
                 ),
@@ -1410,10 +1597,109 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
+  Widget _buildVideoFileMessage(
+    BuildContext context,
+    String fileName,
+    int? fileSize,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+      child: GestureDetector(
+        onSecondaryTapDown: (details) =>
+            _showContextMenu(context, details.globalPosition),
+        onLongPressStart: (details) =>
+            _showContextMenu(context, details.globalPosition),
+        child: Row(
+          mainAxisAlignment: isMe
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (!isMe && sender != null && showAvatar)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: GestureDetector(
+                  onTap: () => _showSenderProfile(context, sender!),
+                  child: _buildSenderAvatar(
+                    sender!,
+                    fallbackAvatarUrl: message.senderIsChannel
+                        ? channelAvatarUrl
+                        : null,
+                  ),
+                ),
+              ),
+            if (!isMe && !showAvatar) const SizedBox(width: 44),
+            if (!isMe) const SizedBox(width: 8),
+            Flexible(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: _maxMessageBubbleWidth(context, 0.72),
+                ),
+                child: Column(
+                  crossAxisAlignment: isMe
+                      ? CrossAxisAlignment.end
+                      : CrossAxisAlignment.start,
+                  children: [
+                    if (_shouldShowSenderName) _buildSenderName(),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: _VideoMessagePlayer(
+                        url: message.fileUrl!,
+                        onSaveToGallery: onSaveVideoNote == null
+                            ? null
+                            : () =>
+                                  onSaveVideoNote!(message.fileUrl!, fileName),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            '$fileName${fileSize == null ? '' : ' • ${_formatFileSize(fileSize)}'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white60,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          _formatTime(message.createdAt),
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 10,
+                          ),
+                        ),
+                        if (showReadReceipt && isMe) ...[
+                          const SizedBox(width: 3),
+                          _buildReadReceipt(),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (isMe && !showAvatar) const SizedBox(width: 44),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildTextMessage(BuildContext context) {
     final isStickerMessage = message.isSticker;
+    final hasBotKeyboard = message.botInlineKeyboard.isNotEmpty;
     final theme = ThemeService().currentTheme.value;
     final nftSlug = GiftService.giftNftSlugFromUrl(message.content);
+    final maxWidth = _maxMessageBubbleWidth(
+      context,
+      isStickerMessage ? 0.8 : 0.65,
+    );
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
@@ -1434,25 +1720,10 @@ class MessageBubble extends StatelessWidget {
                 child: GestureDetector(
                   onTap: () => _showSenderProfile(context, sender!),
                   onLongPress: () => _showSenderProfile(context, sender!),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundImage:
-                        sender!.avatarUrl != null &&
-                            sender!.avatarUrl!.isNotEmpty
-                        ? NetworkImage(sender!.avatarUrl!)
-                        : null,
-                    backgroundColor: Colors.grey[800],
-                    child:
-                        sender!.avatarUrl == null || sender!.avatarUrl!.isEmpty
-                        ? Text(
-                            sender!.name != null && sender!.name!.isNotEmpty
-                                ? sender!.name![0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                            ),
-                          )
+                  child: _buildSenderAvatar(
+                    sender!,
+                    fallbackAvatarUrl: message.senderIsChannel
+                        ? channelAvatarUrl
                         : null,
                   ),
                 ),
@@ -1464,15 +1735,14 @@ class MessageBubble extends StatelessWidget {
                 duration: const Duration(milliseconds: 400),
                 curve: Curves.easeOutCubic,
                 padding: EdgeInsets.all(
-                  isStickerMessage ? 0 : (message.isImage ? 4 : 12),
+                  isStickerMessage || message.isImage ? 0 : 12,
                 ),
                 constraints: BoxConstraints(
-                  maxWidth:
-                      MediaQuery.of(context).size.width *
-                      (isStickerMessage ? 0.8 : 0.65),
+                  minWidth: hasBotKeyboard ? maxWidth : 0,
+                  maxWidth: maxWidth,
                 ),
                 decoration: BoxDecoration(
-                  color: isStickerMessage
+                  color: isStickerMessage || message.isImage
                       ? Colors.transparent
                       : (isHighlighted
                             ? (isMe
@@ -1592,12 +1862,12 @@ class MessageBubble extends StatelessWidget {
                             maxHeight: 180,
                           ),
                           child: ClipRRect(
-                            borderRadius: BorderRadius.circular(0),
+                            borderRadius: BorderRadius.circular(18),
+                            clipBehavior: Clip.antiAlias,
                             child: Image.network(
                               message.content,
                               fit: BoxFit.contain,
                               width: 140,
-                              height: 140,
                               errorBuilder: (_, _, _) => Container(
                                 width: 140,
                                 height: 140,
@@ -1648,45 +1918,54 @@ class MessageBubble extends StatelessWidget {
                               );
                             }
                           },
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: Image.network(
-                              message.content,
-                              fit: BoxFit.cover,
-                              width: double.infinity,
-                              errorBuilder: (_, _, _) => Container(
-                                height: 200,
-                                color: Colors.grey[800],
-                                child: const Center(
-                                  child: Icon(
-                                    Icons.broken_image,
-                                    color: Colors.grey,
-                                    size: 48,
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: _maxImageWidth(context),
+                              maxHeight: _maxImageHeight(context),
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(16),
+                              clipBehavior: Clip.antiAlias,
+                              child: Image.network(
+                                message.content,
+                                fit: BoxFit.contain,
+                                width: _maxImageWidth(context),
+                                errorBuilder: (_, _, _) => Container(
+                                  width: double.infinity,
+                                  height: 200,
+                                  color: Colors.grey[800],
+                                  child: const Center(
+                                    child: Icon(
+                                      Icons.broken_image,
+                                      color: Colors.grey,
+                                      size: 48,
+                                    ),
                                   ),
                                 ),
-                              ),
-                              loadingBuilder:
-                                  (context, child, loadingProgress) {
-                                    if (loadingProgress == null) return child;
-                                    return Container(
-                                      height: 200,
-                                      color: Colors.grey[800],
-                                      child: Center(
-                                        child: CircularProgressIndicator(
-                                          value:
-                                              loadingProgress
-                                                      .expectedTotalBytes !=
-                                                  null
-                                              ? loadingProgress
-                                                        .cumulativeBytesLoaded /
-                                                    loadingProgress
-                                                        .expectedTotalBytes!
-                                              : null,
-                                          color: Colors.white,
+                                loadingBuilder:
+                                    (context, child, loadingProgress) {
+                                      if (loadingProgress == null) return child;
+                                      return Container(
+                                        width: double.infinity,
+                                        height: 200,
+                                        color: Colors.grey[800],
+                                        child: Center(
+                                          child: CircularProgressIndicator(
+                                            value:
+                                                loadingProgress
+                                                        .expectedTotalBytes !=
+                                                    null
+                                                ? loadingProgress
+                                                          .cumulativeBytesLoaded /
+                                                      loadingProgress
+                                                          .expectedTotalBytes!
+                                                : null,
+                                            color: Colors.white,
+                                          ),
                                         ),
-                                      ),
-                                    );
-                                  },
+                                      );
+                                    },
+                              ),
                             ),
                           ),
                         ),
@@ -1708,6 +1987,7 @@ class MessageBubble extends StatelessWidget {
                             ),
                             onUrlTap: onUrlTap,
                             onUsernameTap: onUsernameTap,
+                            onCommandTap: onCommandTap,
                           ),
                         ),
                       ],
@@ -1765,6 +2045,8 @@ class MessageBubble extends StatelessWidget {
                         ],
                       ],
                     ),
+                    if (hasBotKeyboard && !message.isDeleted)
+                      _buildBotKeyboard(),
                   ],
                 ),
               ),
@@ -1776,27 +2058,10 @@ class MessageBubble extends StatelessWidget {
                   onTap: () => _showSenderProfile(context, message.sender!),
                   onLongPress: () =>
                       _showSenderProfile(context, message.sender!),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundImage:
-                        message.sender!.avatarUrl != null &&
-                            message.sender!.avatarUrl!.isNotEmpty
-                        ? NetworkImage(message.sender!.avatarUrl!)
-                        : null,
-                    backgroundColor: Colors.grey[800],
-                    child:
-                        message.sender!.avatarUrl == null ||
-                            message.sender!.avatarUrl!.isEmpty
-                        ? Text(
-                            message.sender!.name != null &&
-                                    message.sender!.name!.isNotEmpty
-                                ? message.sender!.name![0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                            ),
-                          )
+                  child: _buildSenderAvatar(
+                    message.sender!,
+                    fallbackAvatarUrl: message.senderIsChannel
+                        ? channelAvatarUrl
                         : null,
                   ),
                 ),
@@ -1804,6 +2069,70 @@ class MessageBubble extends StatelessWidget {
             if (isMe && !showAvatar) const SizedBox(width: 44),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildBotKeyboard() {
+    const gap = 6.0;
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: message.botInlineKeyboard.map((rowButtons) {
+          final buttons = rowButtons
+              .whereType<Map>()
+              .where((button) => (button['text']?.toString() ?? '').isNotEmpty)
+              .toList();
+          if (buttons.isEmpty) return const SizedBox.shrink();
+          return Padding(
+            padding: const EdgeInsets.only(bottom: gap),
+            child: Row(
+              children: [
+                for (var index = 0; index < buttons.length; index++) ...[
+                  if (index > 0) const SizedBox(width: gap),
+                  Expanded(child: _buildBotButton(buttons[index])),
+                ],
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildBotButton(Map button) {
+    final text = button['text']?.toString() ?? '';
+    final callbackData = button['callback_data']?.toString();
+    final url = button['url']?.toString();
+    final style = button['style']?.toString() ?? 'primary';
+    final backgroundColor = switch (style) {
+      'success' => const Color(0xFF218C63),
+      'danger' => const Color(0xFFC84646),
+      'secondary' => const Color(0xFF596579),
+      _ => const Color(0xFF3478D4),
+    };
+
+    return FilledButton(
+      onPressed: callbackData != null
+          ? (onBotCallback == null
+                ? null
+                : () => onBotCallback!(message, callbackData))
+          : (url == null || onUrlTap == null ? null : () => onUrlTap!(url)),
+      style: FilledButton.styleFrom(
+        backgroundColor: backgroundColor,
+        foregroundColor: Colors.white,
+        disabledBackgroundColor: backgroundColor.withValues(alpha: 0.45),
+        disabledForegroundColor: Colors.white70,
+        minimumSize: const Size(0, 44),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -1829,163 +2158,59 @@ class MessageBubble extends StatelessWidget {
               GestureDetector(
                 onTap: () => _showSenderProfile(context, sender!),
                 onLongPress: () => _showSenderProfile(context, sender!),
-                child: CircleAvatar(
-                  radius: 18,
-                  backgroundImage:
-                      sender!.avatarUrl != null && sender!.avatarUrl!.isNotEmpty
-                      ? NetworkImage(sender!.avatarUrl!)
-                      : null,
-                  backgroundColor: Colors.grey[800],
-                  child: sender!.avatarUrl == null || sender!.avatarUrl!.isEmpty
-                      ? Text(
-                          sender!.name != null && sender!.name!.isNotEmpty
-                              ? sender!.name![0].toUpperCase()
-                              : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                          ),
-                        )
+                child: _buildSenderAvatar(
+                  sender!,
+                  fallbackAvatarUrl: message.senderIsChannel
+                      ? channelAvatarUrl
                       : null,
                 ),
               ),
             if (!isMe && !showAvatar) const SizedBox(width: 38),
             if (!isMe) const SizedBox(width: 8),
-            GestureDetector(
-              onDoubleTap: onReaction == null
-                  ? null
-                  : () => onReaction!(message, doubleTapReaction),
-              onTap: () {
-                if (message.voiceUrl != null && onPlayVoice != null) {
-                  onPlayVoice!(message.voiceUrl!);
-                }
-              },
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
-                constraints: BoxConstraints(
-                  minWidth: 120,
-                  maxWidth: _maxMessageBubbleWidth(context, 0.6),
-                ),
-                decoration: BoxDecoration(
-                  color: isMe ? theme.myBubble : theme.otherBubble,
-                  borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(16),
-                    topRight: const Radius.circular(16),
-                    bottomLeft: Radius.circular(isMe ? 16 : 4),
-                    bottomRight: Radius.circular(isMe ? 4 : 16),
+            if (message.voiceUrl != null)
+              GestureDetector(
+                onDoubleTap: onReaction == null
+                    ? null
+                    : () => onReaction!(message, doubleTapReaction),
+                child: Container(
+                  constraints: BoxConstraints(
+                    maxWidth: _maxMessageBubbleWidth(context, 0.72),
+                  ),
+                  decoration: BoxDecoration(
+                    color: isMe ? theme.myBubble : theme.otherBubble,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: isMe
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start,
+                    children: [
+                      if (_shouldShowSenderName) _buildSenderName(),
+                      _buildForwardedFrom(context),
+                      _InlineAudioPlayer(
+                        url: message.voiceUrl!,
+                        title: null,
+                        isMe: isMe,
+                        fallbackDuration: message.voiceDuration,
+                        showTimeAndReceipt: true,
+                        createdAt: message.createdAt,
+                        showReadReceipt: showReadReceipt && isMe,
+                        readReceiptBuilder: _buildReadReceipt,
+                        edited: message.isEdited,
+                      ),
+                    ],
                   ),
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: isMe
-                      ? CrossAxisAlignment.end
-                      : CrossAxisAlignment.start,
-                  children: [
-                    if (_shouldShowSenderName) _buildSenderName(),
-                    _buildForwardedFrom(context),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.play_arrow,
-                          color: isMe ? theme.myText : Colors.white,
-                          size: 24,
-                        ),
-                        const SizedBox(width: 12),
-                        SizedBox(
-                          width: 60,
-                          height: 30,
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            mainAxisSize: MainAxisSize.min,
-                            children: List.generate(8, (index) {
-                              final height = 4 + (index % 4) * 3;
-                              return Container(
-                                width: 3,
-                                height: height.toDouble(),
-                                margin: const EdgeInsets.symmetric(
-                                  horizontal: 1.5,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: (isMe ? theme.myText : Colors.white)
-                                      .withValues(alpha: 0.6),
-                                  borderRadius: BorderRadius.circular(2),
-                                ),
-                              );
-                            }),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          _formatDuration(
-                            message.voiceDuration ?? Duration.zero,
-                          ),
-                          style: TextStyle(
-                            color: isMe ? theme.myText : Colors.white,
-                            fontSize: 12,
-                          ),
-                        ),
-                        if (message.isEdited) ...[
-                          const SizedBox(width: 4),
-                          Text(
-                            '(изменено)',
-                            style: TextStyle(
-                              color: isMe
-                                  ? theme.myText.withValues(alpha: 0.5)
-                                  : Colors.white54,
-                              fontSize: 10,
-                            ),
-                          ),
-                        ],
-                        const SizedBox(width: 8),
-                        Text(
-                          _formatTime(message.createdAt),
-                          style: TextStyle(
-                            color: isMe
-                                ? theme.myText.withValues(alpha: 0.5)
-                                : Colors.white54,
-                            fontSize: 10,
-                          ),
-                        ),
-                        if (showReadReceipt && isMe) ...[
-                          const SizedBox(width: 3),
-                          _buildReadReceipt(),
-                        ],
-                      ],
-                    ),
-                  ],
-                ),
               ),
-            ),
             if (isMe && message.sender != null && showAvatar)
               GestureDetector(
                 onTap: () => _showSenderProfile(context, message.sender!),
                 onLongPress: () => _showSenderProfile(context, message.sender!),
-                child: CircleAvatar(
-                  radius: 18,
-                  backgroundImage:
-                      message.sender!.avatarUrl != null &&
-                          message.sender!.avatarUrl!.isNotEmpty
-                      ? NetworkImage(message.sender!.avatarUrl!)
-                      : null,
-                  backgroundColor: Colors.grey[800],
-                  child:
-                      message.sender!.avatarUrl == null ||
-                          message.sender!.avatarUrl!.isEmpty
-                      ? Text(
-                          message.sender!.name != null &&
-                                  message.sender!.name!.isNotEmpty
-                              ? message.sender!.name![0].toUpperCase()
-                              : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                          ),
-                        )
+                child: _buildSenderAvatar(
+                  message.sender!,
+                  fallbackAvatarUrl: message.senderIsChannel
+                      ? channelAvatarUrl
                       : null,
                 ),
               ),
@@ -2017,25 +2242,10 @@ class MessageBubble extends StatelessWidget {
                 padding: const EdgeInsets.only(right: 8),
                 child: GestureDetector(
                   onTap: () => _showSenderProfile(context, sender!),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundImage:
-                        sender!.avatarUrl != null &&
-                            sender!.avatarUrl!.isNotEmpty
-                        ? NetworkImage(sender!.avatarUrl!)
-                        : null,
-                    backgroundColor: Colors.grey[800],
-                    child:
-                        sender!.avatarUrl == null || sender!.avatarUrl!.isEmpty
-                        ? Text(
-                            sender!.name.isNotEmpty
-                                ? sender!.name[0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                            ),
-                          )
+                  child: _buildSenderAvatar(
+                    sender!,
+                    fallbackAvatarUrl: message.senderIsChannel
+                        ? channelAvatarUrl
                         : null,
                   ),
                 ),
@@ -2086,6 +2296,603 @@ class MessageBubble extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _InlineAudioPlayer extends StatefulWidget {
+  final String url;
+  final String? title;
+  final bool isMe;
+  final String? sizeLabel;
+  final VoidCallback? onAddToProfile;
+  final Duration? fallbackDuration;
+  final bool showTimeAndReceipt;
+  final DateTime? createdAt;
+  final bool showReadReceipt;
+  final Widget Function()? readReceiptBuilder;
+  final bool edited;
+
+  const _InlineAudioPlayer({
+    required this.url,
+    required this.title,
+    required this.isMe,
+    this.sizeLabel,
+    this.onAddToProfile,
+    this.fallbackDuration,
+    this.showTimeAndReceipt = false,
+    this.createdAt,
+    this.showReadReceipt = false,
+    this.readReceiptBuilder,
+    this.edited = false,
+  });
+
+  @override
+  State<_InlineAudioPlayer> createState() => _InlineAudioPlayerState();
+}
+
+class _InlineAudioPlayerState extends State<_InlineAudioPlayer> {
+  static AudioPlayer? _activePlayer;
+
+  final AudioPlayer _player = AudioPlayer();
+  final List<StreamSubscription<dynamic>> _subscriptions = [];
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  bool _isPlaying = false;
+  bool _hasStarted = false;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _duration = widget.fallbackDuration ?? Duration.zero;
+    _subscriptions.addAll([
+      _player.onPositionChanged.listen((value) {
+        if (mounted) setState(() => _position = value);
+      }),
+      _player.onDurationChanged.listen((value) {
+        if (mounted && value > Duration.zero) {
+          setState(() => _duration = value);
+        }
+      }),
+      _player.onPlayerStateChanged.listen((state) {
+        if (!mounted) return;
+        setState(() => _isPlaying = state == PlayerState.playing);
+        if (state != PlayerState.playing && _activePlayer == _player) {
+          _activePlayer = null;
+        }
+      }),
+      _player.onPlayerComplete.listen((_) {
+        if (!mounted) return;
+        setState(() {
+          _isPlaying = false;
+          _position = Duration.zero;
+          _hasStarted = false;
+        });
+        if (_activePlayer == _player) _activePlayer = null;
+      }),
+    ]);
+  }
+
+  @override
+  void didUpdateWidget(covariant _InlineAudioPlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _player.stop();
+      setState(() {
+        _position = Duration.zero;
+        _duration = widget.fallbackDuration ?? Duration.zero;
+        _isPlaying = false;
+        _hasStarted = false;
+        _error = null;
+      });
+    }
+  }
+
+  Future<void> _togglePlayback() async {
+    try {
+      if (_isPlaying) {
+        await _player.pause();
+        return;
+      }
+      if (_activePlayer != null && _activePlayer != _player) {
+        await _activePlayer!.pause();
+      }
+      _activePlayer = _player;
+      if (_hasStarted) {
+        await _player.resume();
+      } else {
+        await _player.play(UrlSource(widget.url));
+        _hasStarted = true;
+      }
+      if (mounted) setState(() => _error = null);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _seek(Duration position) async {
+    if (!_hasStarted || _duration <= Duration.zero) return;
+    try {
+      await _player.seek(position);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  String _format(Duration duration) {
+    final minutes = duration.inMinutes;
+    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+
+  @override
+  void dispose() {
+    for (final subscription in _subscriptions) {
+      subscription.cancel();
+    }
+    if (_activePlayer == _player) _activePlayer = null;
+    _player.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = widget.isMe
+        ? const Color(0xFF78A9FF)
+        : const Color(0xFF78A9FF);
+    final textColor = widget.isMe ? Colors.white : Colors.white;
+    final maxMilliseconds = _duration.inMilliseconds > 0
+        ? _duration.inMilliseconds.toDouble()
+        : 1.0;
+    final positionMilliseconds = _position.inMilliseconds
+        .clamp(0, maxMilliseconds.toInt())
+        .toDouble();
+
+    return SizedBox(
+      width: widget.title == null ? 230 : 250,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 7),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 44,
+              height: 44,
+              child: Material(
+                color: accent,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: _togglePlayback,
+                  child: Icon(
+                    _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                    color: Colors.white,
+                    size: 26,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (widget.title != null)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            widget.title!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: textColor,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (widget.onAddToProfile != null)
+                          SizedBox(
+                            width: 30,
+                            height: 30,
+                            child: IconButton(
+                              tooltip: 'Добавить в профиль',
+                              padding: EdgeInsets.zero,
+                              icon: const Icon(
+                                Icons.person_add_alt_1_rounded,
+                                size: 18,
+                              ),
+                              color: accent,
+                              onPressed: widget.onAddToProfile,
+                            ),
+                          ),
+                      ],
+                    ),
+                  SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 3,
+                      thumbShape: const RoundSliderThumbShape(
+                        enabledThumbRadius: 5,
+                      ),
+                      overlayShape: const RoundSliderOverlayShape(
+                        overlayRadius: 10,
+                      ),
+                      activeTrackColor: accent,
+                      inactiveTrackColor: Colors.white24,
+                      thumbColor: accent,
+                      overlayColor: accent.withValues(alpha: 0.12),
+                    ),
+                    child: Slider(
+                      min: 0,
+                      max: maxMilliseconds,
+                      value: positionMilliseconds,
+                      onChanged: !_hasStarted || _duration <= Duration.zero
+                          ? null
+                          : (value) {
+                              final target = Duration(
+                                milliseconds: value.round(),
+                              );
+                              setState(() => _position = target);
+                              _seek(target);
+                            },
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Text(
+                        _format(_position),
+                        style: TextStyle(
+                          color: textColor.withValues(alpha: 0.72),
+                          fontSize: 10,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        _format(
+                          _duration > Duration.zero
+                              ? _duration
+                              : (widget.fallbackDuration ?? Duration.zero),
+                        ),
+                        style: TextStyle(
+                          color: textColor.withValues(alpha: 0.72),
+                          fontSize: 10,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (widget.showTimeAndReceipt && widget.createdAt != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (widget.edited)
+                            Text(
+                              'изменено · ',
+                              style: TextStyle(
+                                color: textColor.withValues(alpha: 0.5),
+                                fontSize: 9,
+                              ),
+                            ),
+                          Text(
+                            '${widget.createdAt!.hour.toString().padLeft(2, '0')}:${widget.createdAt!.minute.toString().padLeft(2, '0')}',
+                            style: TextStyle(
+                              color: textColor.withValues(alpha: 0.5),
+                              fontSize: 9,
+                            ),
+                          ),
+                          if (widget.showReadReceipt &&
+                              widget.readReceiptBuilder != null) ...[
+                            const SizedBox(width: 3),
+                            widget.readReceiptBuilder!(),
+                          ],
+                        ],
+                      ),
+                    ),
+                  if (widget.title != null &&
+                      widget.sizeLabel != null &&
+                      widget.sizeLabel!.isNotEmpty)
+                    Text(
+                      widget.sizeLabel!,
+                      style: TextStyle(
+                        color: textColor.withValues(alpha: 0.55),
+                        fontSize: 10,
+                      ),
+                    ),
+                  if (_error != null)
+                    Text(
+                      'Не удалось воспроизвести',
+                      style: TextStyle(
+                        color: Colors.red.shade200,
+                        fontSize: 10,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoMessagePlayer extends StatefulWidget {
+  final String url;
+  final VoidCallback? onSaveToGallery;
+
+  const _VideoMessagePlayer({required this.url, this.onSaveToGallery});
+
+  @override
+  State<_VideoMessagePlayer> createState() => _VideoMessagePlayerState();
+}
+
+class _VideoMessagePlayerState extends State<_VideoMessagePlayer> {
+  late VideoPlayerController _controller;
+  Object? _loadError;
+  bool _isInitialized = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+    _initialize();
+  }
+
+  @override
+  void didUpdateWidget(covariant _VideoMessagePlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _controller.dispose();
+      _controller = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+      _loadError = null;
+      _isInitialized = false;
+      _initialize();
+    }
+  }
+
+  Future<void> _initialize() async {
+    try {
+      await _controller.initialize();
+      if (mounted) setState(() => _isInitialized = true);
+    } catch (error) {
+      debugPrint('Не удалось загрузить видео: $error');
+      if (mounted) setState(() => _loadError = error);
+    }
+  }
+
+  Future<void> _openFullscreen() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => _FullscreenVideoPlayer(
+          url: widget.url,
+          onSaveToGallery: widget.onSaveToGallery,
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loadError != null) {
+      return const SizedBox(
+        width: 280,
+        height: 158,
+        child: ColoredBox(
+          color: Colors.black,
+          child: Center(
+            child: Icon(Icons.error_outline, color: Colors.redAccent, size: 36),
+          ),
+        ),
+      );
+    }
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 280, maxHeight: 360),
+      child: AspectRatio(
+        aspectRatio: _isInitialized && _controller.value.aspectRatio > 0
+            ? _controller.value.aspectRatio
+            : 16 / 9,
+        child: GestureDetector(
+          onTap: _openFullscreen,
+          child: Stack(
+            fit: StackFit.expand,
+            alignment: Alignment.center,
+            children: [
+              ColoredBox(
+                color: Colors.black,
+                child: _isInitialized
+                    ? VideoPlayer(_controller)
+                    : const Center(
+                        child: CircularProgressIndicator(
+                          color: Color(0xFF78A9FF),
+                        ),
+                      ),
+              ),
+              if (_isInitialized)
+                ValueListenableBuilder<VideoPlayerValue>(
+                  valueListenable: _controller,
+                  builder: (context, value, child) => Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (!value.isPlaying)
+                        Center(
+                          child: DecoratedBox(
+                            decoration: const BoxDecoration(
+                              color: Colors.black54,
+                              shape: BoxShape.circle,
+                            ),
+                            child: IconButton(
+                              onPressed: _openFullscreen,
+                              icon: const Icon(
+                                Icons.play_arrow_rounded,
+                                color: Colors.white,
+                                size: 38,
+                              ),
+                            ),
+                          ),
+                        ),
+                      Positioned(
+                        left: 8,
+                        right: 8,
+                        bottom: 8,
+                        child: VideoProgressIndicator(
+                          _controller,
+                          allowScrubbing: true,
+                          colors: const VideoProgressColors(
+                            playedColor: Color(0xFF78A9FF),
+                            bufferedColor: Colors.white54,
+                            backgroundColor: Colors.white24,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FullscreenVideoPlayer extends StatefulWidget {
+  final String url;
+  final VoidCallback? onSaveToGallery;
+
+  const _FullscreenVideoPlayer({required this.url, this.onSaveToGallery});
+
+  @override
+  State<_FullscreenVideoPlayer> createState() => _FullscreenVideoPlayerState();
+}
+
+class _FullscreenVideoPlayerState extends State<_FullscreenVideoPlayer> {
+  late final VideoPlayerController _controller;
+  Object? _loadError;
+  bool _isInitialized = false;
+  bool _showControls = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+    _initialize();
+  }
+
+  Future<void> _initialize() async {
+    try {
+      await _controller.initialize();
+      await _controller.play();
+      if (mounted) setState(() => _isInitialized = true);
+    } catch (error) {
+      debugPrint('Не удалось открыть видео на весь экран: $error');
+      if (mounted) setState(() => _loadError = error);
+    }
+  }
+
+  Future<void> _togglePlayback() async {
+    if (!_isInitialized) return;
+    try {
+      if (_controller.value.isPlaying) {
+        await _controller.pause();
+      } else {
+        await _controller.play();
+      }
+    } catch (error) {
+      debugPrint('Не удалось воспроизвести видео: $error');
+      if (mounted) setState(() => _loadError = error);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        actions: [
+          if (widget.onSaveToGallery != null)
+            IconButton(
+              tooltip: 'Сохранить в галерею',
+              onPressed: widget.onSaveToGallery,
+              icon: const Icon(Icons.save_alt_rounded),
+            ),
+        ],
+      ),
+      body: Center(
+        child: _loadError != null
+            ? const Icon(Icons.error_outline, color: Colors.redAccent, size: 42)
+            : !_isInitialized
+            ? const CircularProgressIndicator(color: Color(0xFF78A9FF))
+            : GestureDetector(
+                onTap: () => setState(() => _showControls = !_showControls),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    AspectRatio(
+                      aspectRatio: _controller.value.aspectRatio > 0
+                          ? _controller.value.aspectRatio
+                          : 16 / 9,
+                      child: VideoPlayer(_controller),
+                    ),
+                    if (_showControls)
+                      ValueListenableBuilder<VideoPlayerValue>(
+                        valueListenable: _controller,
+                        builder: (context, value, child) => Stack(
+                          children: [
+                            Center(
+                              child: IconButton(
+                                onPressed: _togglePlayback,
+                                style: IconButton.styleFrom(
+                                  backgroundColor: Colors.black54,
+                                  foregroundColor: Colors.white,
+                                ),
+                                iconSize: 64,
+                                icon: Icon(
+                                  value.isPlaying
+                                      ? Icons.pause_rounded
+                                      : Icons.play_arrow_rounded,
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              left: 20,
+                              right: 20,
+                              bottom: 20,
+                              child: VideoProgressIndicator(
+                                _controller,
+                                allowScrubbing: true,
+                                colors: const VideoProgressColors(
+                                  playedColor: Color(0xFF78A9FF),
+                                  bufferedColor: Colors.white54,
+                                  backgroundColor: Colors.white24,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
       ),
     );
   }

@@ -69,10 +69,26 @@ class MessageAuthor {
   });
 }
 
+class _VoltStatus {
+  final bool hasStreak;
+  final bool extendedToday;
+
+  const _VoltStatus({required this.hasStreak, required this.extendedToday});
+}
+
+class _CachedVoltStatus {
+  final _VoltStatus status;
+  final DateTime updatedAt;
+
+  const _CachedVoltStatus({required this.status, required this.updatedAt});
+}
+
 class ChatService {
   final SupabaseClient _supabase = Supabase.instance.client;
   final AuthService _authService = AuthService();
   final CryptoService _crypto = CryptoService();
+  final Map<String, _CachedVoltStatus> _voltStatusCache = {};
+  DateTime? _voltStatusCacheDate;
   MessageAuthor? _messageAuthor;
 
   void setMessageAuthor(MessageAuthor? author) {
@@ -211,11 +227,15 @@ class ChatService {
 
       String chatName = isSavedChat ? 'Избранное' : roomData['name'] ?? 'Чат';
       String? avatarUrl = roomData['avatar_url'];
+      var isBot = false;
+      var botVerified = false;
 
       if (!isSavedChat && roomData['type'] == 'direct') {
         final otherUser = await _getChatPartner(roomId, userId);
         chatName = otherUser?.name ?? 'Чат';
         avatarUrl = otherUser?.avatarUrl;
+        isBot = otherUser?.isBot ?? false;
+        botVerified = otherUser?.botVerified ?? false;
       }
 
       chats.add(
@@ -230,8 +250,33 @@ class ChatService {
           lastMessageIsMe: lastMessage?.isMe ?? false,
           lastMessageReadByOthers: isSavedChat && lastMessage?.isMe == true,
           isVerified: roomData['is_verified'] == true,
+          isBot: isBot,
+          botVerified: botVerified,
         ),
       );
+    }
+
+    final directChatIds = chats
+        .where((chat) => chat.type == 'direct')
+        .map((chat) => chat.id)
+        .toList();
+    Map<String, _VoltStatus> voltStatuses = {};
+    try {
+      voltStatuses = await _getVoltStatuses(
+        directChatIds,
+      ).timeout(const Duration(seconds: 5));
+    } catch (error) {
+      debugPrint('Не удалось загрузить статусы «Вольта»: $error');
+    }
+
+    for (var index = 0; index < chats.length; index++) {
+      final status = voltStatuses[chats[index].id];
+      if (status != null) {
+        chats[index] = chats[index].withVoltStreak(
+          hasVoltStreak: status.hasStreak,
+          voltExtendedToday: status.extendedToday,
+        );
+      }
     }
 
     final loginRequests = await _supabase
@@ -319,6 +364,10 @@ class ChatService {
           : (unreadCountRows.first['unread_count'] as num).toInt();
     }
 
+    final voltStatus = chat.type == 'direct'
+        ? (await _getVoltStatuses([chat.id], forceRefresh: true))[chat.id]
+        : null;
+
     return Chat(
       id: chat.id,
       name: chat.name,
@@ -330,6 +379,115 @@ class ChatService {
       lastMessageIsMe: lastMessage.isMe,
       lastMessageReadByOthers: chat.type == 'saved' && lastMessage.isMe,
       isVerified: chat.isVerified,
+      isBot: chat.isBot,
+      botVerified: chat.botVerified,
+      hasVoltStreak: voltStatus?.hasStreak ?? chat.hasVoltStreak,
+      voltExtendedToday: voltStatus?.extendedToday ?? chat.voltExtendedToday,
+    );
+  }
+
+  Future<Map<String, _VoltStatus>> _getVoltStatuses(
+    List<String> roomIds, {
+    bool forceRefresh = false,
+  }) async {
+    if (roomIds.isEmpty) return {};
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    if (_voltStatusCacheDate != today) {
+      _voltStatusCache.clear();
+      _voltStatusCacheDate = today;
+    }
+
+    final staleBefore = now.subtract(const Duration(minutes: 1));
+    final roomIdsToFetch = roomIds.where((roomId) {
+      final cachedStatus = _voltStatusCache[roomId];
+      return forceRefresh ||
+          cachedStatus == null ||
+          cachedStatus.updatedAt.isBefore(staleBefore);
+    }).toList();
+    if (roomIdsToFetch.isEmpty) {
+      return {
+        for (final roomId in roomIds)
+          if (_voltStatusCache[roomId] != null)
+            roomId: _voltStatusCache[roomId]!.status,
+      };
+    }
+
+    final tomorrow = DateTime(today.year, today.month, today.day + 1);
+    final oldestDate = DateTime(today.year, today.month, today.day - 3);
+    final activityByRoom = <String, Set<DateTime>>{};
+    const pageSize = 1000;
+    var offset = 0;
+
+    while (true) {
+      final rows = await _supabase
+          .from('messages')
+          .select('room_id, created_at')
+          .inFilter('room_id', roomIdsToFetch)
+          .gte('created_at', oldestDate.toUtc().toIso8601String())
+          .lt('created_at', tomorrow.toUtc().toIso8601String())
+          .order('created_at', ascending: false)
+          .range(offset, offset + pageSize - 1);
+
+      for (final row in rows) {
+        final roomId = row['room_id'] as String?;
+        final createdAt = DateTime.tryParse(
+          row['created_at']?.toString() ?? '',
+        )?.toLocal();
+        if (roomId == null || createdAt == null) continue;
+
+        final messageDate = DateTime(
+          createdAt.year,
+          createdAt.month,
+          createdAt.day,
+        );
+        activityByRoom.putIfAbsent(roomId, () => <DateTime>{}).add(messageDate);
+      }
+
+      if (rows.length < pageSize) break;
+      offset += pageSize;
+    }
+
+    final yesterday = DateTime(today.year, today.month, today.day - 1);
+    for (final roomId in roomIdsToFetch) {
+      _voltStatusCache[roomId] = _CachedVoltStatus(
+        status: _calculateVoltStatus(
+          activityByRoom[roomId] ?? const <DateTime>{},
+          today,
+          yesterday,
+        ),
+        updatedAt: now,
+      );
+    }
+
+    return {
+      for (final roomId in roomIds)
+        if (_voltStatusCache[roomId] != null)
+          roomId: _voltStatusCache[roomId]!.status,
+    };
+  }
+
+  _VoltStatus _calculateVoltStatus(
+    Set<DateTime> activeDates,
+    DateTime today,
+    DateTime yesterday,
+  ) {
+    final extendedToday = activeDates.contains(today);
+    var activeDate = extendedToday ? today : yesterday;
+    var consecutiveDays = 0;
+    while (activeDates.contains(activeDate)) {
+      consecutiveDays++;
+      activeDate = DateTime(
+        activeDate.year,
+        activeDate.month,
+        activeDate.day - 1,
+      );
+    }
+
+    return _VoltStatus(
+      hasStreak: consecutiveDays >= 3,
+      extendedToday: extendedToday,
     );
   }
 
@@ -344,7 +502,13 @@ class ChatService {
 
     String content;
     if (isFile) {
-      content = '📎 ${data['file_name'] as String? ?? 'Файл'}';
+      content =
+          data['file_mime_type']?.toString().toLowerCase().startsWith(
+                'video/',
+              ) ==
+              true
+          ? 'Видео'
+          : '📎 ${data['file_name'] as String? ?? 'Файл'}';
     } else if (isImage) {
       content = isSticker ? 'Стикер' : '📷 Фото';
       final encryptedCaption = data['image_caption'];
@@ -356,6 +520,8 @@ class ChatService {
           debugPrint('Не удалось расшифровать превью фото: $error');
         }
       }
+    } else if (data['bot_plaintext'] == true) {
+      content = data['encrypted_content']?.toString() ?? '';
     } else if (isVoice) {
       content = '🎤 Голосовое сообщение';
     } else {
@@ -379,13 +545,13 @@ class ChatService {
     return Message(
       id: data['id'] as String,
       chatId: data['room_id'] as String,
-      senderId: data['profile_id'] as String,
+      senderId: (data['bot_id'] ?? data['profile_id']) as String,
       content: content.replaceAll(
         'http://81.19.136.44:54321',
         'https://strazh.denotestudio.ru',
       ),
       createdAt: parseDateTimeSafely(data['created_at']),
-      isMe: data['profile_id'] == currentUserId,
+      isMe: data['bot_id'] == null && data['profile_id'] == currentUserId,
       isVoice: isVoice,
       isImage: isImage,
       isSticker: isSticker,
@@ -514,6 +680,10 @@ class ChatService {
             lastMessageIsMe: refreshedChat.lastMessageIsMe,
             lastMessageReadByOthers: refreshedChat.lastMessageReadByOthers,
             isVerified: refreshedChat.isVerified,
+            isBot: refreshedChat.isBot,
+            botVerified: refreshedChat.botVerified,
+            hasVoltStreak: refreshedChat.hasVoltStreak,
+            voltExtendedToday: refreshedChat.voltExtendedToday,
           ),
         );
       } else {
@@ -569,22 +739,42 @@ class ChatService {
         .select()
         .eq('room_id', roomId)
         .order('created_at', ascending: true);
+    final viewedViewOnceIds = await _getViewedViewOnceMessageIds(
+      response,
+      currentUserId,
+    );
 
     final List<Message> messages = [];
 
     for (var data in response) {
       app.User? sender;
 
-      var isMe = data['profile_id'] == currentUserId;
+      var isMe = data['bot_id'] == null && data['profile_id'] == currentUserId;
 
-      if (!isMe &&
+      if (data['bot_id'] == null &&
+          !isMe &&
           data['sender_avatar'] != null &&
           currentUserAvatar != null &&
           data['sender_avatar'] == currentUserAvatar) {
         isMe = true;
       }
 
-      if (data['sender_is_channel'] == true) {
+      if (data['bot_id'] != null) {
+        final botRecord = await _supabase
+            .from('bots')
+            .select('name, tag, avatar_url, is_verified')
+            .eq('id', data['bot_id'])
+            .maybeSingle();
+        sender = app.User(
+          id: data['bot_id'],
+          name: botRecord?['name'] as String? ?? data['sender_name'] ?? 'Бот',
+          tag: botRecord?['tag'] as String? ?? data['sender_tag'] ?? '',
+          avatarUrl:
+              botRecord?['avatar_url'] as String? ?? data['sender_avatar'],
+          isBot: true,
+          botVerified: botRecord?['is_verified'] == true,
+        );
+      } else if (data['sender_is_channel'] == true) {
         sender = app.User(
           id: data['profile_id'],
           name: data['sender_name'] ?? 'Канал',
@@ -596,7 +786,6 @@ class ChatService {
           'get_user_by_id',
           params: {'p_id': data['profile_id']},
         );
-
         sender = app.User(
           id: data['profile_id'],
           name: userData?['name'] ?? data['sender_name'] ?? 'Пользователь',
@@ -644,7 +833,9 @@ class ChatService {
       String decryptedContent = '';
       String? decryptedCaption;
 
-      if (isGift) {
+      if (data['bot_plaintext'] == true) {
+        decryptedContent = data['encrypted_content']?.toString() ?? '';
+      } else if (isGift) {
         decryptedContent = data['encrypted_content']?.toString() ?? 'Подарок';
       } else if (isFile) {
         final fileName = data['file_name'] as String? ?? 'Файл';
@@ -658,9 +849,11 @@ class ChatService {
       } else if (isImage) {
         decryptedContent = data['encrypted_content'] ?? '';
         decryptedContent = normalizeStorageUrl(decryptedContent);
-        decryptedContent =
-            await resolveChatStorageUrl('chat_media', decryptedContent) ??
-            decryptedContent;
+        if (data['view_once'] != true || isMe) {
+          decryptedContent =
+              await resolveChatStorageUrl('chat_media', decryptedContent) ??
+              decryptedContent;
+        }
 
         if (data['image_caption'] != null &&
             data['image_caption'].toString().isNotEmpty) {
@@ -703,7 +896,7 @@ class ChatService {
         Message(
           id: data['id'],
           chatId: data['room_id'],
-          senderId: data['profile_id'],
+          senderId: data['bot_id'] ?? data['profile_id'],
           forwardedFromUserId: data['forwarded_from_user_id'] as String?,
           forwardedFromName: data['forwarded_from_name'] as String?,
           content: decryptedContent,
@@ -730,10 +923,12 @@ class ChatService {
           giftNftPattern: data['gift_nft_pattern'] as String?,
           giftNftAnimationUrl: data['gift_nft_animation_url'] as String?,
           imageCaption: decryptedCaption,
-          voiceUrl: await resolveChatStorageUrl(
-            'voice_messages',
-            data['voice_url'],
-          ),
+          voiceUrl: data['view_once'] == true && !isMe
+              ? data['voice_url'] as String?
+              : await resolveChatStorageUrl(
+                  'voice_messages',
+                  data['voice_url'],
+                ),
           voiceDuration: data['voice_duration'] != null
               ? Duration(seconds: data['voice_duration'] as int)
               : null,
@@ -743,16 +938,23 @@ class ChatService {
           replyToContent: data['reply_to_content'] as String?,
           replyToSender: data['reply_to_sender'] as String?,
           isFile: isFile,
+          viewOnce: data['view_once'] == true,
+          viewOnceViewed: viewedViewOnceIds.contains(data['id']),
           fileName: data['file_name'] as String?,
-          fileUrl: await resolveChatStorageUrl(
-            data['encrypted_content_type'] == 'video_note'
-                ? 'chat_media'
-                : 'chat_files',
-            data['file_url'],
-          ),
+          fileUrl: data['view_once'] == true && !isMe
+              ? data['file_url'] as String?
+              : await resolveChatStorageUrl(
+                  data['encrypted_content_type'] == 'video_note'
+                      ? 'chat_media'
+                      : 'chat_files',
+                  data['file_url'],
+                ),
           fileSize: data['file_size'] as int?,
           fileMimeType: data['file_mime_type'] as String?,
           isVideoNote: data['encrypted_content_type'] == 'video_note',
+          botInlineKeyboard: Message.parseBotInlineKeyboard(
+            data['bot_inline_keyboard'],
+          ),
           isPinned: data['is_pinned'] ?? false,
         ),
       );
@@ -762,18 +964,52 @@ class ChatService {
     return _attachPollVotes(withReactions, currentUserId);
   }
 
-  Future<String?> sendMessage(String roomId, String content) async {
+  Future<Set<String>> _getViewedViewOnceMessageIds(
+    Iterable<dynamic> rows,
+    String viewerId,
+  ) async {
+    final ids = rows
+        .where(
+          (row) => row['view_once'] == true && row['profile_id'] != viewerId,
+        )
+        .map((row) => row['id'].toString())
+        .toList();
+    if (ids.isEmpty) return {};
+
+    final views = await _supabase
+        .from('message_media_views')
+        .select('message_id')
+        .eq('viewer_id', viewerId)
+        .inFilter('message_id', ids);
+    return views.map((row) => row['message_id'].toString()).toSet();
+  }
+
+  Future<bool> claimViewOnceMessage(String messageId) async {
+    final result = await _supabase.rpc(
+      'claim_view_once_message',
+      params: {'p_message_id': messageId},
+    );
+    return result == true;
+  }
+
+  Future<String?> sendMessage(
+    String roomId,
+    String content, {
+    bool isBotChat = false,
+  }) async {
     final userId = _authService.currentUserId;
     if (userId == null) return null;
 
     final currentUser = _authService.getCurrentUser();
     final metadata = currentUser?.userMetadata ?? {};
 
-    final encryptedContent = await _crypto.encryptRoomContent(
-      roomId: roomId,
-      senderId: userId,
-      content: content,
-    );
+    final encryptedContent = isBotChat
+        ? content
+        : await _crypto.encryptRoomContent(
+            roomId: roomId,
+            senderId: userId,
+            content: content,
+          );
     final payload = buildMessagePayload(
       roomId: roomId,
       userId: userId,
@@ -785,11 +1021,53 @@ class ChatService {
 
     final response = await _supabase
         .from('messages')
-        .insert({...payload, ..._senderFields(metadata)})
+        .insert({
+          ...payload,
+          ..._senderFields(metadata),
+          if (isBotChat) 'bot_update_text': content,
+          if (isBotChat) 'bot_plaintext': true,
+        })
         .select('id')
         .single();
 
     return response['id'] as String?;
+  }
+
+  Future<String> scheduleTextMessage(
+    String roomId,
+    String content,
+    DateTime scheduledFor, {
+    String? replyToId,
+    String? replyToContent,
+    String? replyToSender,
+  }) async {
+    final userId = _authService.currentUserId;
+    if (userId == null) throw StateError('Необходимо войти в аккаунт');
+
+    final encryptedContent = await _crypto.encryptRoomContent(
+      roomId: roomId,
+      senderId: userId,
+      content: content,
+    );
+    final payload = <String, dynamic>{
+      'encrypted_content': encryptedContent,
+      'encrypted_content_type': 'text/plain',
+      if (replyToId != null) 'reply_to_id': replyToId,
+      if (replyToContent != null) 'reply_to_content': replyToContent,
+      if (replyToSender != null) 'reply_to_sender': replyToSender,
+    };
+    final result = await _supabase.rpc(
+      'schedule_chat_text_message',
+      params: {
+        'p_room_id': roomId,
+        'p_payload': payload,
+        'p_scheduled_for': scheduledFor.toUtc().toIso8601String(),
+      },
+    );
+    if (result is! String || result.isEmpty) {
+      throw const FormatException('Не удалось создать отложенное сообщение');
+    }
+    return result;
   }
 
   Future<void> forwardMessage(Message message, String targetRoomId) async {
@@ -823,6 +1101,7 @@ class ChatService {
     } else if (message.isVoice) {
       payload.addAll({
         'is_voice': true,
+        'view_once': message.viewOnce,
         'voice_url':
             storageObjectPath('voice_messages', message.voiceUrl) ??
             message.voiceUrl,
@@ -834,6 +1113,7 @@ class ChatService {
     } else if (message.isVideoNote) {
       payload.addAll({
         'is_file': true,
+        'view_once': message.viewOnce,
         'file_url':
             storageObjectPath('chat_media', message.fileUrl) ?? message.fileUrl,
         'file_name': message.fileName,
@@ -845,6 +1125,7 @@ class ChatService {
     } else if (message.isFile) {
       payload.addAll({
         'is_file': true,
+        'view_once': message.viewOnce,
         'file_url':
             storageObjectPath('chat_files', message.fileUrl) ?? message.fileUrl,
         'file_name': message.fileName,
@@ -857,6 +1138,7 @@ class ChatService {
     } else if (message.isImage) {
       payload.addAll({
         'is_image': true,
+        'view_once': message.viewOnce,
         'encrypted_content_type': message.isSticker
             ? 'sticker'
             : message.fileMimeType ?? 'image/jpeg',
@@ -885,6 +1167,7 @@ class ChatService {
     String roomId,
     String photoUrl, {
     String caption = '',
+    bool viewOnce = false,
   }) async {
     final userId = _authService.currentUserId;
     if (userId == null) return;
@@ -906,6 +1189,7 @@ class ChatService {
       'encrypted_content': photoUrl,
       'encrypted_content_type': 'image/jpeg',
       'is_image': true,
+      'view_once': viewOnce,
       'image_caption': encryptedCaption,
       ..._senderFields(metadata),
       'created_at': DateTime.now().toUtc().toIso8601String(),
@@ -1025,8 +1309,10 @@ class ChatService {
     String chatId,
     String fileUrl,
     String fileName,
-    int fileSize,
-  ) async {
+    int fileSize, {
+    String? fileMimeType,
+    bool viewOnce = false,
+  }) async {
     try {
       final userId = _authService.currentUserId;
       if (userId == null) {
@@ -1040,9 +1326,11 @@ class ChatService {
         'room_id': chatId,
         'profile_id': userId,
         'is_file': true,
+        'view_once': viewOnce,
         'file_url': fileUrl,
         'file_name': fileName,
         'file_size': fileSize,
+        'file_mime_type': ?fileMimeType,
         'encrypted_content': '📎 $fileName',
         ..._senderFields(metadata),
         'created_at': DateTime.now().toUtc().toIso8601String(),
@@ -1064,8 +1352,9 @@ class ChatService {
     String roomId,
     String videoUrl,
     String fileName,
-    int fileSize,
-  ) async {
+    int fileSize, {
+    bool viewOnce = false,
+  }) async {
     final userId = _authService.currentUserId;
     if (userId == null) throw StateError('Пользователь не авторизован');
 
@@ -1077,6 +1366,7 @@ class ChatService {
           'room_id': roomId,
           'profile_id': userId,
           'is_file': true,
+          'view_once': viewOnce,
           'file_url': videoUrl,
           'file_name': fileName,
           'file_size': fileSize,
@@ -1181,8 +1471,9 @@ class ChatService {
     String roomId,
     String voiceUrl,
     Duration duration,
-    String encryptedContent,
-  ) async {
+    String encryptedContent, {
+    bool viewOnce = false,
+  }) async {
     final userId = _authService.currentUserId;
     if (userId == null) {
       throw Exception('Пользователь не авторизован');
@@ -1195,6 +1486,7 @@ class ChatService {
       'room_id': roomId,
       'profile_id': userId,
       'is_voice': true,
+      'view_once': viewOnce,
       'voice_url': voiceUrl,
       'voice_duration': duration.inSeconds,
       'encrypted_content': encryptedContent,
@@ -1206,8 +1498,9 @@ class ChatService {
   Future<String?> sendReplyMessage(
     String roomId,
     String content,
-    String replyToId,
-  ) async {
+    String replyToId, {
+    bool isBotChat = false,
+  }) async {
     final userId = _authService.currentUserId;
     if (userId == null) {
       throw Exception('Пользователь не авторизован');
@@ -1229,11 +1522,13 @@ class ChatService {
       throw StateError('Нельзя ответить на сообщение из другого чата');
     }
 
-    final encryptedContent = await _crypto.encryptRoomContent(
-      roomId: roomId,
-      senderId: userId,
-      content: content,
-    );
+    final encryptedContent = isBotChat
+        ? content
+        : await _crypto.encryptRoomContent(
+            roomId: roomId,
+            senderId: userId,
+            content: content,
+          );
     const replyToContent = 'Зашифрованное сообщение';
     final senderFields = _senderFields(metadata);
 
@@ -1252,7 +1547,11 @@ class ChatService {
 
     final response = await _supabase
         .from('messages')
-        .insert(payload)
+        .insert({
+          ...payload,
+          if (isBotChat) 'bot_update_text': content,
+          if (isBotChat) 'bot_plaintext': true,
+        })
         .select('id')
         .single();
 
@@ -1284,10 +1583,17 @@ class ChatService {
     if (isFile) {
       if (data['encrypted_content_type'] == 'video_note') {
         decryptedContent = 'Кружок';
+      } else if (data['file_mime_type']?.toString().toLowerCase().startsWith(
+            'video/',
+          ) ==
+          true) {
+        decryptedContent = 'Видео';
       } else {
         final fileName = data['file_name'] as String? ?? 'Файл';
         decryptedContent = '📎 $fileName';
       }
+    } else if (data['bot_plaintext'] == true) {
+      decryptedContent = data['encrypted_content']?.toString() ?? '';
     } else if (isImage) {
       decryptedContent = isSticker ? 'Стикер' : '📷 Фото';
       if (data['image_caption'] != null && !isSticker) {
@@ -1327,12 +1633,12 @@ class ChatService {
     return Message(
       id: data['id'],
       chatId: data['room_id'],
-      senderId: data['profile_id'],
+      senderId: data['bot_id'] ?? data['profile_id'],
       forwardedFromUserId: data['forwarded_from_user_id'] as String?,
       forwardedFromName: data['forwarded_from_name'] as String?,
       content: decryptedContent,
       createdAt: parseDateTimeSafely(data['created_at']),
-      isMe: data['profile_id'] == currentUserId,
+      isMe: data['bot_id'] == null && data['profile_id'] == currentUserId,
       sender: null,
       isVoice: isVoice,
       isImage: isImage,
@@ -1387,11 +1693,17 @@ class ChatService {
       final response = await filterQuery
           .order('created_at', ascending: false)
           .limit(limit);
+      final viewedViewOnceIds = await _getViewedViewOnceMessageIds(
+        response,
+        currentUser.id,
+      );
 
       final List<Message> messages = [];
       for (final record in response.reversed) {
         try {
-          final isMe = record['profile_id'] == currentUser.id;
+          final isMe =
+              record['bot_id'] == null &&
+              record['profile_id'] == currentUser.id;
           final isVoice = record['is_voice'] ?? false;
           final isImage = Message.isImageMessage(record);
           final isPoll = record['encrypted_content_type'] == 'poll';
@@ -1421,7 +1733,9 @@ class ChatService {
           String decryptedContent = '';
           String? decryptedCaption;
 
-          if (isGift) {
+          if (record['bot_plaintext'] == true) {
+            decryptedContent = record['encrypted_content']?.toString() ?? '';
+          } else if (isGift) {
             decryptedContent =
                 record['encrypted_content']?.toString() ?? 'Подарок';
           } else if (isImage) {
@@ -1430,9 +1744,11 @@ class ChatService {
                 record['encrypted_content']?.toString() ?? '',
               ),
             );
-            decryptedContent =
-                await resolveChatStorageUrl('chat_media', decryptedContent) ??
-                decryptedContent;
+            if (record['view_once'] != true || isMe) {
+              decryptedContent =
+                  await resolveChatStorageUrl('chat_media', decryptedContent) ??
+                  decryptedContent;
+            }
             if (record['image_caption'] != null &&
                 record['image_caption'].toString().isNotEmpty) {
               try {
@@ -1454,7 +1770,13 @@ class ChatService {
             );
           } else if (isFile) {
             final fileName = record['file_name'] as String? ?? 'Файл';
-            decryptedContent = '📎 $fileName';
+            decryptedContent =
+                record['file_mime_type']?.toString().toLowerCase().startsWith(
+                      'video/',
+                    ) ==
+                    true
+                ? 'Видео'
+                : '📎 $fileName';
           } else if (!isVoice) {
             final encryptedContent = record['encrypted_content'] ?? '';
             if (encryptedContent.isNotEmpty) {
@@ -1484,7 +1806,26 @@ class ChatService {
           }
 
           app.User? sender;
-          if (record['sender_is_channel'] == true) {
+          if (record['bot_id'] != null) {
+            final botRecord = await _supabase
+                .from('bots')
+                .select('id, name, tag, avatar_url, is_verified')
+                .eq('id', record['bot_id'])
+                .maybeSingle();
+            sender = app.User(
+              id: record['bot_id'],
+              name:
+                  botRecord?['name'] as String? ??
+                  record['sender_name'] ??
+                  'Бот',
+              tag: botRecord?['tag'] as String? ?? record['sender_tag'] ?? '',
+              avatarUrl:
+                  botRecord?['avatar_url'] as String? ??
+                  record['sender_avatar'],
+              isBot: true,
+              botVerified: botRecord?['is_verified'] == true,
+            );
+          } else if (record['sender_is_channel'] == true) {
             sender = app.User(
               id: record['profile_id'],
               name: record['sender_name'] ?? 'Канал',
@@ -1532,7 +1873,7 @@ class ChatService {
             Message(
               id: record['id'],
               chatId: record['room_id'],
-              senderId: record['profile_id'],
+              senderId: record['bot_id'] ?? record['profile_id'],
               forwardedFromUserId: record['forwarded_from_user_id'] as String?,
               forwardedFromName: record['forwarded_from_name'] as String?,
               content: decryptedContent,
@@ -1560,10 +1901,12 @@ class ChatService {
               giftNftPattern: record['gift_nft_pattern'] as String?,
               giftNftAnimationUrl: record['gift_nft_animation_url'] as String?,
               imageCaption: decryptedCaption,
-              voiceUrl: await resolveChatStorageUrl(
-                'voice_messages',
-                record['voice_url'],
-              ),
+              voiceUrl: record['view_once'] == true && !isMe
+                  ? record['voice_url'] as String?
+                  : await resolveChatStorageUrl(
+                      'voice_messages',
+                      record['voice_url'],
+                    ),
               voiceDuration: record['voice_duration'] != null
                   ? Duration(seconds: record['voice_duration'] as int)
                   : null,
@@ -1571,13 +1914,17 @@ class ChatService {
               replyToContent: record['reply_to_content'] as String?,
               replyToSender: record['reply_to_sender'] as String?,
               isFile: isFile,
+              viewOnce: record['view_once'] == true,
+              viewOnceViewed: viewedViewOnceIds.contains(record['id']),
               fileName: record['file_name'] as String?,
-              fileUrl: await resolveChatStorageUrl(
-                record['encrypted_content_type'] == 'video_note'
-                    ? 'chat_media'
-                    : 'chat_files',
-                record['file_url'],
-              ),
+              fileUrl: record['view_once'] == true && !isMe
+                  ? record['file_url'] as String?
+                  : await resolveChatStorageUrl(
+                      record['encrypted_content_type'] == 'video_note'
+                          ? 'chat_media'
+                          : 'chat_files',
+                      record['file_url'],
+                    ),
               fileSize: record['file_size'] as int?,
               fileMimeType: record['file_mime_type'] as String?,
               isVideoNote: record['encrypted_content_type'] == 'video_note',
@@ -1599,7 +1946,7 @@ class ChatService {
       return await _attachPollVotes(withReactions, currentUser.id);
     } catch (e) {
       debugPrint('Ошибка загрузки сообщений: $e');
-      return [];
+      rethrow;
     }
   }
 
@@ -1824,6 +2171,29 @@ class ChatService {
   }
 
   Future<app.User?> _getChatPartner(String roomId, String currentUserId) async {
+    final botParticipant = await _supabase
+        .from('bot_chat_participants')
+        .select('bot_id')
+        .eq('room_id', roomId)
+        .maybeSingle();
+    if (botParticipant != null) {
+      final botRecord = await _supabase
+          .from('bots')
+          .select('id, name, tag, avatar_url, is_verified')
+          .eq('id', botParticipant['bot_id'])
+          .maybeSingle();
+      if (botRecord != null) {
+        return app.User(
+          id: botRecord['id'] as String,
+          name: botRecord['name'] as String,
+          tag: botRecord['tag'] as String,
+          avatarUrl: botRecord['avatar_url'] as String?,
+          isBot: true,
+          botVerified: botRecord['is_verified'] == true,
+        );
+      }
+    }
+
     final response = await _supabase
         .from('room_participants')
         .select('user_id')
@@ -1849,6 +2219,8 @@ class ChatService {
       name: userRecord['name'] ?? 'Пользователь',
       avatarUrl: userRecord['avatar_url'],
       badge: userRecord['badge'] as String?,
+      isBot: userRecord['is_bot'] == true,
+      botVerified: userRecord['bot_verified'] == true,
     );
   }
 
@@ -1941,22 +2313,36 @@ class ChatService {
     Map<String, dynamic> data,
     String? currentUserId,
   ) async {
-    final isMe = data['profile_id'] == currentUserId;
-
+    final botId = data['bot_id'];
+    final isMe = botId == null && data['profile_id'] == currentUserId;
+    final botRecord = botId == null
+        ? null
+        : await _supabase
+              .from('bots')
+              .select('name, tag, avatar_url, is_verified')
+              .eq('id', botId)
+              .maybeSingle();
     final sender = app.User(
-      id: data['profile_id'],
-      name: data['sender_name'] ?? 'Пользователь',
-      tag: data['sender_tag'] ?? '',
-      avatarUrl: data['sender_avatar'],
+      id: botId ?? data['profile_id'],
+      name:
+          botRecord?['name'] as String? ??
+          data['sender_name'] ??
+          'Пользователь',
+      tag: botRecord?['tag'] as String? ?? data['sender_tag'] ?? '',
+      avatarUrl: botRecord?['avatar_url'] as String? ?? data['sender_avatar'],
+      isBot: botId != null,
+      botVerified: botRecord?['is_verified'] == true,
     );
 
     return Message(
       id: data['id'],
       chatId: data['room_id'],
-      senderId: data['profile_id'],
+      senderId: botId ?? data['profile_id'],
       forwardedFromUserId: data['forwarded_from_user_id'] as String?,
       forwardedFromName: data['forwarded_from_name'] as String?,
-      content: Message.isImageMessage(data)
+      content: data['bot_plaintext'] == true
+          ? data['encrypted_content']?.toString() ?? ''
+          : Message.isImageMessage(data)
           ? await resolveChatStorageUrl(
                   'chat_media',
                   await _crypto.decodeRoomContent(

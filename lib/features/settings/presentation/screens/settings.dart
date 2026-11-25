@@ -22,6 +22,7 @@ import 'package:strazh/features/settings/presentation/screens/privacy_settings_s
 import 'package:strazh/features/settings/presentation/screens/change_password_screen.dart';
 import 'package:strazh/features/settings/presentation/screens/reaction_settings_screen.dart';
 import 'package:strazh/features/settings/presentation/screens/sound_settings.dart';
+import 'package:strazh/features/settings/presentation/screens/cache_settings_screen.dart';
 import 'package:strazh/features/support/presentation/screens/support_tickets_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -384,6 +385,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 6),
             _buildSectionCard(
               children: [
+                _buildMenuItem(
+                  icon: Icons.storage_outlined,
+                  title: 'Кэш сообщений',
+                  subtitle: 'Офлайн-доступ, размер и очистка',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const CacheSettingsScreen(),
+                      ),
+                    );
+                  },
+                ),
+                _buildDivider(),
                 _buildMenuItem(
                   icon: Icons.cleaning_services_outlined,
                   title: 'Очистить кэш анимаций подарков',

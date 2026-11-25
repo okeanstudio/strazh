@@ -16,6 +16,32 @@ class CryptoService {
     return EndToEndEncryptionService.instance.ensureCurrentDevice();
   }
 
+  Future<bool> isKeyVaultUnlocked() {
+    return EndToEndEncryptionService.instance.isKeyVaultUnlocked();
+  }
+
+  Future<void> syncKeyVaultWithServerEscrow({
+    bool createDeviceIfMissing = true,
+  }) {
+    return EndToEndEncryptionService.instance.syncKeyVaultWithServerEscrow(
+      createDeviceIfMissing: createDeviceIfMissing,
+    );
+  }
+
+  Future<void> syncKeyVaultWithPassword(
+    String password, {
+    bool createIfMissing = true,
+  }) {
+    return EndToEndEncryptionService.instance.syncKeyVaultWithPassword(
+      password,
+      createIfMissing: createIfMissing,
+    );
+  }
+
+  Future<void> syncKeyVaultWithStoredKey() {
+    return EndToEndEncryptionService.instance.syncKeyVaultWithStoredKey();
+  }
+
   Future<String> encryptRoomContent({
     required String roomId,
     required String senderId,

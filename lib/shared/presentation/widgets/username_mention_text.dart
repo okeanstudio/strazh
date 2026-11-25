@@ -2,10 +2,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 String formatUsernameList(String primary, Iterable<String> additional) {
-  String clean(String username) => username.trim().replaceFirst(
-    RegExp(r'^@+'),
-    '',
-  );
+  String clean(String username) =>
+      username.trim().replaceFirst(RegExp(r'^@+'), '');
 
   final primaryUsername = clean(primary);
   if (primaryUsername.isEmpty) return '';
@@ -29,6 +27,7 @@ class UsernameMentionText extends StatefulWidget {
   final Color linkColor;
   final ValueChanged<String>? onUsernameTap;
   final ValueChanged<String>? onUrlTap;
+  final ValueChanged<String>? onCommandTap;
   final TextAlign textAlign;
 
   const UsernameMentionText({
@@ -38,6 +37,7 @@ class UsernameMentionText extends StatefulWidget {
     required this.linkColor,
     required this.onUsernameTap,
     this.onUrlTap,
+    this.onCommandTap,
     this.textAlign = TextAlign.start,
   });
 
@@ -47,7 +47,7 @@ class UsernameMentionText extends StatefulWidget {
 
 class _UsernameMentionTextState extends State<UsernameMentionText> {
   static final RegExp _linkRegex = RegExp(
-    r'(https?://[^\s]+)|(www\.[^\s]+)|([a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^\s]*)|(?<![\w@])@([a-zA-Z0-9_]{3,})',
+    r'(https?://[^\s]+)|(www\.[^\s]+)|([a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^\s]*)|(?<![\w@])@([a-zA-Z0-9_]{3,})|(?<![\w/])(/[a-zA-Z][a-zA-Z0-9_]{0,31}(?:@[a-zA-Z0-9_]{3,})?)',
     caseSensitive: false,
   );
   final List<TapGestureRecognizer> _recognizers = [];
@@ -77,6 +77,7 @@ class _UsernameMentionTextState extends State<UsernameMentionText> {
       }
 
       final mention = match.group(4);
+      final command = match.group(5);
       if (mention != null) {
         final recognizer = TapGestureRecognizer()
           ..onTap = widget.onUsernameTap == null
@@ -86,6 +87,22 @@ class _UsernameMentionTextState extends State<UsernameMentionText> {
         spans.add(
           TextSpan(
             text: match.group(0),
+            style: TextStyle(
+              color: widget.linkColor,
+              decoration: TextDecoration.underline,
+            ),
+            recognizer: recognizer,
+          ),
+        );
+      } else if (command != null) {
+        final recognizer = TapGestureRecognizer()
+          ..onTap = widget.onCommandTap == null
+              ? null
+              : () => widget.onCommandTap!(command);
+        _recognizers.add(recognizer);
+        spans.add(
+          TextSpan(
+            text: command,
             style: TextStyle(
               color: widget.linkColor,
               decoration: TextDecoration.underline,

@@ -7,9 +7,19 @@ import 'package:package_info_plus/package_info_plus.dart';
 const _versionManifestUrl = 'https://auth.strazh.chat/strazh/version.json';
 
 class AppUpdateInfo {
-  const AppUpdateInfo({required this.version});
+  const AppUpdateInfo({
+    required this.version,
+    required this.whatsNew,
+    this.androidUrl,
+    this.windowsUrl,
+    this.downloadUrl,
+  });
 
   final String version;
+  final List<String> whatsNew;
+  final String? androidUrl;
+  final String? windowsUrl;
+  final String? downloadUrl;
 }
 
 class AppUpdateService {
@@ -31,15 +41,19 @@ class AppUpdateService {
       throw const FormatException('Неверный формат version.json');
     }
 
-    final latestVersion = decoded['version'];
-    if (latestVersion is! String || !_isValidVersion(latestVersion)) {
-      throw const FormatException('В version.json указана неверная версия');
-    }
-
+    final update = _appUpdateInfoFromJson(decoded);
     final packageInfo = await PackageInfo.fromPlatform();
-    if (!isNewerVersion(packageInfo.version, latestVersion)) return null;
+    if (!isNewerVersion(packageInfo.version, update.version)) return null;
 
-    return AppUpdateInfo(version: latestVersion);
+    return update;
+  }
+
+  static AppUpdateInfo parseManifest(String body) {
+    final decoded = jsonDecode(body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('Неверный формат version.json');
+    }
+    return _appUpdateInfoFromJson(decoded);
   }
 
   static bool isNewerVersion(String current, String latest) =>
@@ -68,6 +82,52 @@ class AppUpdateService {
       .split('.')
       .map((part) => int.parse(part))
       .toList();
+}
+
+AppUpdateInfo _appUpdateInfoFromJson(Map<String, dynamic> json) {
+  final version = json['version'];
+  if (version is! String || !AppUpdateService._isValidVersion(version)) {
+    throw const FormatException('В version.json указана неверная версия');
+  }
+
+  final rawNotes = json['whats_new'];
+  final notes = <String>[];
+  if (rawNotes != null) {
+    if (rawNotes is! List) {
+      throw const FormatException('Поле whats_new должно быть списком строк');
+    }
+    for (final note in rawNotes) {
+      if (note is! String || note.trim().isEmpty) {
+        throw const FormatException(
+          'Поле whats_new должно содержать непустые строки',
+        );
+      }
+      notes.add(note.trim());
+    }
+  }
+
+  return AppUpdateInfo(
+    version: version,
+    whatsNew: List.unmodifiable(notes),
+    androidUrl: _readHttpsUrl(json, 'android_url'),
+    windowsUrl: _readHttpsUrl(json, 'windows_url'),
+    downloadUrl: _readHttpsUrl(json, 'download_url'),
+  );
+}
+
+String? _readHttpsUrl(Map<String, dynamic> json, String key) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! String) {
+    throw FormatException('Поле $key должно быть строкой');
+  }
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return null;
+  final uri = Uri.tryParse(trimmed);
+  if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
+    throw FormatException('В поле $key указан некорректный HTTPS URL');
+  }
+  return trimmed;
 }
 
 Map<String, dynamic> _decodeVersionManifest(String body) {

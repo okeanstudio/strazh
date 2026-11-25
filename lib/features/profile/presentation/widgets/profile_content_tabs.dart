@@ -19,6 +19,7 @@ class ProfileContentTabs extends StatefulWidget {
     required this.ownerName,
     required this.ownerTag,
     required this.ownerAvatarUrl,
+    this.canDeleteStories = false,
   });
 
   final List<Story> stories;
@@ -34,6 +35,7 @@ class ProfileContentTabs extends StatefulWidget {
   final String ownerName;
   final String ownerTag;
   final String ownerAvatarUrl;
+  final bool canDeleteStories;
 
   @override
   State<ProfileContentTabs> createState() => _ProfileContentTabsState();
@@ -57,11 +59,9 @@ class _ProfileContentTabsState extends State<ProfileContentTabs> {
         Container(
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
-            color: const Color(0xFF171329).withValues(alpha: 0.92),
+            color: const Color(0xFF151515),
             borderRadius: BorderRadius.circular(28),
-            border: Border.all(
-              color: const Color(0xFF9B5CFF).withValues(alpha: 0.24),
-            ),
+            border: Border.all(color: const Color(0xFF343434)),
           ),
           child: Row(
             children: [
@@ -92,7 +92,7 @@ class _ProfileContentTabsState extends State<ProfileContentTabs> {
             constraints: const BoxConstraints(minHeight: 42),
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
             decoration: BoxDecoration(
-              color: selected ? const Color(0xFF7442F5) : Colors.transparent,
+              color: selected ? const Color(0xFF444444) : Colors.transparent,
               borderRadius: BorderRadius.circular(24),
             ),
             child: Row(
@@ -164,6 +164,7 @@ class _ProfileContentTabsState extends State<ProfileContentTabs> {
             context,
             widget.stories,
             initialIndex: index,
+            canDeleteStories: widget.canDeleteStories,
           ),
         );
       },
@@ -224,7 +225,7 @@ class _ProfileContentTabsState extends State<ProfileContentTabs> {
           width: 24,
           height: 24,
           child: CircularProgressIndicator(
-            color: Color(0xFF9B5CFF),
+            color: Colors.white70,
             strokeWidth: 2,
           ),
         ),
@@ -319,11 +320,9 @@ class _MessageState extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 30, horizontal: 18),
       decoration: BoxDecoration(
-        color: const Color(0xFF171329),
+        color: const Color(0xFF151515),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: const Color(0xFF9B5CFF).withValues(alpha: 0.2),
-        ),
+        border: Border.all(color: const Color(0xFF343434)),
       ),
       child: Column(
         children: [

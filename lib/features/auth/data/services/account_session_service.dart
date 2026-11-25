@@ -88,7 +88,6 @@ class AccountSessionService {
     _authSubscription ??= Supabase.instance.client.auth.onAuthStateChange
         .listen((state) {
           if (state.session != null) {
-            unawaited(registerCurrentEncryptionDevice());
             unawaited(
               saveCurrentSession().catchError((Object error, StackTrace stack) {
                 debugPrint('Не удалось сохранить сессию аккаунта: $error');
@@ -97,11 +96,11 @@ class AccountSessionService {
           }
         });
     await saveCurrentSession();
-    await registerCurrentEncryptionDevice();
   }
 
   Future<void> registerCurrentEncryptionDevice() async {
-    final userId = Supabase.instance.client.auth.currentUser?.id;
+    final currentUser = Supabase.instance.client.auth.currentUser;
+    final userId = currentUser?.id;
     if (userId == null || userId == _registeredEncryptionUserId) return;
 
     final pendingRegistration = _encryptionRegistration;
@@ -126,7 +125,22 @@ class AccountSessionService {
 
   Future<void> _registerEncryptionDevice(String userId) async {
     try {
-      await CryptoService().ensureCurrentDevice();
+      final crypto = CryptoService();
+      try {
+        await crypto.syncKeyVaultWithServerEscrow();
+      } catch (error) {
+        debugPrint('Не удалось восстановить ключи E2EE с сервера: $error');
+      }
+      if (await crypto.isKeyVaultUnlocked()) {
+        try {
+          await crypto.syncKeyVaultWithStoredKey();
+        } catch (error) {
+          debugPrint(
+            'Не удалось синхронизировать локальный vault E2EE: $error',
+          );
+        }
+      }
+      await crypto.ensureCurrentDevice();
       if (Supabase.instance.client.auth.currentUser?.id == userId) {
         _registeredEncryptionUserId = userId;
       }

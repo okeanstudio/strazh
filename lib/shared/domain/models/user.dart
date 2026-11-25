@@ -15,6 +15,8 @@ class User {
   final String? invitedByUserId;
   final String? identityPublicKey;
   final String? badge;
+  final bool isBot;
+  final bool botVerified;
 
   const User({
     required this.id,
@@ -32,6 +34,8 @@ class User {
     this.invitedByUserId,
     this.identityPublicKey,
     this.badge,
+    this.isBot = false,
+    this.botVerified = false,
   });
 
   factory User.fromJson(Map<String, dynamic> json) {
@@ -53,6 +57,8 @@ class User {
       invitedByUserId: json['invited_by_user_id'],
       identityPublicKey: json['identity_public_key'],
       badge: json['badge'],
+      isBot: json['is_bot'] == true,
+      botVerified: json['bot_verified'] == true,
     );
   }
 
@@ -73,6 +79,8 @@ class User {
       'invited_by_user_id': invitedByUserId,
       'identity_public_key': identityPublicKey,
       'badge': badge,
+      'is_bot': isBot,
+      'bot_verified': botVerified,
     };
   }
 }

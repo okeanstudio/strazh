@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:strazh/shared/presentation/widgets/toast.dart';
 import 'package:strazh/features/auth/data/services/auth_service.dart';
 import 'package:strazh/features/home/presentation/screens/home.dart';
+import 'package:strazh/features/auth/data/services/invite_registration_settings_service.dart';
 
 class OkeanOnboardingScreen extends StatefulWidget {
   const OkeanOnboardingScreen({super.key});
@@ -14,6 +15,25 @@ class OkeanOnboardingScreen extends StatefulWidget {
 class _OkeanOnboardingScreenState extends State<OkeanOnboardingScreen> {
   final TextEditingController _codeController = TextEditingController();
   bool _isLoading = false;
+  bool _isInviteRequired = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadInviteRequirement();
+  }
+
+  Future<bool> _loadInviteRequirement() async {
+    try {
+      final required = await InviteRegistrationSettingsService.instance
+          .isInviteCodeRequired();
+      if (mounted) setState(() => _isInviteRequired = required);
+      return required;
+    } catch (error) {
+      debugPrint('Не удалось загрузить настройку инвайт-кода: $error');
+      return _isInviteRequired;
+    }
+  }
 
   @override
   void dispose() {
@@ -22,18 +42,22 @@ class _OkeanOnboardingScreenState extends State<OkeanOnboardingScreen> {
   }
 
   Future<void> _submit() async {
+    final inviteRequired = await _loadInviteRequirement();
+    if (!mounted) return;
     final code = _codeController.text.trim().toUpperCase();
-    if (code.length < 8) {
+    if (inviteRequired && code.length < 8) {
       Toast.error(context, 'Введите 8-символьный код');
       return;
     }
 
     setState(() => _isLoading = true);
     try {
-      final result = await Supabase.instance.client.rpc(
-        'activate_with_single_use_invite',
-        params: {'p_invite_code': code},
-      );
+      final result = inviteRequired
+          ? await Supabase.instance.client.rpc(
+              'activate_with_single_use_invite',
+              params: {'p_invite_code': code},
+            )
+          : await Supabase.instance.client.rpc('activate_without_invite');
 
       if (!mounted) return;
 
@@ -54,6 +78,7 @@ class _OkeanOnboardingScreenState extends State<OkeanOnboardingScreen> {
           'invalid_invite_code': 'Неверный инвайт-код',
           'already_activated': 'Аккаунт уже активирован',
           'not_authenticated': 'Не авторизован',
+          'invite_required': 'Для регистрации нужен инвайт-код',
         };
         Toast.error(context, map[err] ?? 'Ошибка: $err');
       }
@@ -113,7 +138,9 @@ class _OkeanOnboardingScreenState extends State<OkeanOnboardingScreen> {
               ),
               const SizedBox(height: 12),
               Text(
-                'Вы первый раз в Strazh.\nВведите инвайт-код, чтобы продолжить.',
+                _isInviteRequired
+                    ? 'Вы первый раз в Strazh.\nВведите инвайт-код, чтобы продолжить.'
+                    : 'Вы первый раз в Strazh.\nПродолжите, чтобы завершить регистрацию.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.5),
@@ -121,8 +148,9 @@ class _OkeanOnboardingScreenState extends State<OkeanOnboardingScreen> {
                   height: 1.5,
                 ),
               ),
-              const SizedBox(height: 40),
-              Container(
+              if (_isInviteRequired) ...[
+                const SizedBox(height: 40),
+                Container(
                 decoration: BoxDecoration(
                   color: Colors.white.withOpacity(0.05),
                   borderRadius: BorderRadius.circular(16),
@@ -153,8 +181,10 @@ class _OkeanOnboardingScreenState extends State<OkeanOnboardingScreen> {
                     contentPadding: const EdgeInsets.symmetric(vertical: 20),
                   ),
                 ),
-              ),
-              const SizedBox(height: 24),
+                ),
+                const SizedBox(height: 24),
+              ] else
+                const SizedBox(height: 40),
               SizedBox(
                 width: double.infinity,
                 height: 56,
@@ -176,8 +206,8 @@ class _OkeanOnboardingScreenState extends State<OkeanOnboardingScreen> {
                             color: Colors.black,
                           ),
                         )
-                      : const Text(
-                          'Активировать',
+                      : Text(
+                          _isInviteRequired ? 'Активировать' : 'Продолжить',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
